@@ -9,7 +9,7 @@ readme = "README.md"
 repository = "https://github.com/yingkitw/compiler.git"
 homepage = "https://github.com/yingkitw/compiler"
 keywords = ["compiler", "typescript", "cranelift", "native", "codegen"]
-categories = ["development-tools::compilers", "command-line-utilities"]
+categories = ["compilers", "command-line-utilities"]
 exclude = [
     "AGENTS.md",     # agent-local working doc (gitignored)
     "MEMORY.md",     # agent-local working doc (gitignored)
