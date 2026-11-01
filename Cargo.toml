@@ -1,7 +1,25 @@
 [package]
-name = "tsc"
+name = "tsc-rs"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.96"
+description = "A tiny TypeScript-subset compiler that emits native binaries via Cranelift"
+license = "Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/yingkitw/compiler.git"
+homepage = "https://github.com/yingkitw/compiler"
+keywords = ["compiler", "typescript", "cranelift", "native", "codegen"]
+categories = ["development-tools::compilers", "command-line-utilities"]
+exclude = [
+    "AGENTS.md",     # agent-local working doc (gitignored)
+    "MEMORY.md",     # agent-local working doc (gitignored)
+]
+
+[[bin]]
+# The package is `tsc-rs` (the crates.io name), but the installed binary is
+# still `tsc`, which is what users type.
+name = "tsc"
+path = "src/main.rs"
 
 [dependencies]
 cranelift-codegen = "0.136.5"

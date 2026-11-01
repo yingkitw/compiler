@@ -5,6 +5,14 @@ Hand-written lexer and recursive-descent parser, type-checking code generation
 on top of [Cranelift](https://cranelift.dev/), and a ~3-line C runtime linked
 with the system C compiler.
 
+## Install
+
+```sh
+cargo install tsc-rs      # installs a binary named `tsc`
+```
+
+Requires Rust 1.96+ and a C compiler (`cc`) on `PATH` for linking.
+
 ## Usage
 
 ```sh
