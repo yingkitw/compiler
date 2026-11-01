@@ -166,13 +166,13 @@ The same program, compiled by every toolchain that can turn TypeScript into
 something runnable. Every toolchain must print the same result — the harness
 fails if they disagree.
 
-| | compiler | scriptc | compiler v0.1.0 | deno compile | bun --compile | tsc + node |
-|---|---|---|---|---|---|---|
-| **Artifact size** | **33 KiB** | 90 KiB | 33 KiB | 65 MiB | 60 MiB | 119 B JS + system Node |
-| **Startup** | **6.2 ms** | 6.7 ms | 7.3 ms | 17.0 ms | 18.3 ms | 126 ms |
-| **Compile time** | **0.11 s** | 0.66 s | 0.11 s | 20 s (once) | 0.70 s | 0.29 s |
-| **fib(35) compute** | 45 ms | **25 ms** | 44 ms | 93 ms | 52 ms | 92 ms |
-| **loop(1e8) compute** | **98 ms** | 97 ms | 97 ms | 98 ms | 98 ms | 110 ms |
+| | compiler | scriptc | compiler v0.1.0 | deno compile | bun --compile | tsrust + node | tsc + node |
+|---|---|---|---|---|---|---|---|
+| **Artifact size** | **33 KiB** | 90 KiB | 33 KiB | 65 MiB | 60 MiB | 133 B JS | 119 B JS |
+| **Startup** | **8.1 ms** | 7.8 ms | 7.8 ms | 19.2 ms | 23.1 ms | 149 ms | 156 ms |
+| **Compile time** | **0.21 s** | 0.14 s | 0.15 s | 2.4 s | 1.3 s | 0.50 s | 0.56 s |
+| **fib(35) compute** | 50 ms | **29 ms** | 48 ms | 108 ms | 51 ms | 106 ms | 105 ms |
+| **loop(1e8) compute** | 109 ms | 103 ms | 115 ms | 113 ms | 105 ms | 126 ms | 109 ms |
 
 Full numbers, methodology, and the raw report: [`bench/RESULTS.md`](bench/RESULTS.md).
 Regenerate with `python3 scripts/bench.py`.
@@ -180,14 +180,13 @@ Regenerate with `python3 scripts/bench.py`.
 **Where we win.** `deno compile` and `bun build --compile` embed a JavaScript
 engine (V8 / JavaScriptCore) in the binary. We compile to machine code, so
 there is no engine to ship and nothing to initialise at startup — a 33 KiB
-binary instead of 60 MiB, ~2000x smaller, and ~3x faster to start. We also
-compile ~6x faster than `deno` and ~2x faster than `scriptc`.
+binary instead of 60 MiB, ~2000x smaller, and ~2.5x faster to start.
 
 **Where we lose.** The honest comparison is [`scriptc`](https://scriptc.dev)
 (Vercel Labs), the only other engine-free native TypeScript compiler: it beats
-us on call-heavy code (fib: 25 ms vs our 45 ms). The evidence says **this is
+us on call-heavy code (fib: 29 ms vs our 50 ms). The evidence says **this is
 call overhead, not arithmetic** — our tight loop already ties scriptc, and
-switching that loop to 64-bit integers makes it 1.43x faster, while the same
+switching that loop to 64-bit integers makes it 1.4x faster, while the same
 change does nothing for recursive calls (0.89x). Closing the gap means
 compiling calls better, not computing numbers better.
 
@@ -195,8 +194,15 @@ compiling calls better, not computing numbers better.
 JavaScriptCore are excellent at that shape, and Cranelift's optimiser does
 not beat a mature JIT — we are within noise of all of them (~1.0x).
 
+**A note on `tsrust`.** [`tsrust`](https://github.com/ferrotype/tsr) is
+TypeScript 7's Go compiler ported to Rust. It emits the same JavaScript as
+`tsc` and performs identically (106 ms vs 105 ms on fib) — being written in
+Rust does not make the *output* faster, only the compiler. It is the sharpest
+illustration of what this project is doing differently: we do not emit
+JavaScript at all.
+
 **The `int` type.** `int` (64-bit) keeps arithmetic exact past 2^53 and is
-1.43x faster than `number` on arithmetic-heavy loops. It is not a
+1.4x faster than `number` on arithmetic-heavy loops. It is not a
 cross-toolchain comparison — the JavaScript toolchains have no integer type.
 
 ## Testing

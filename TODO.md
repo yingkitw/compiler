@@ -151,6 +151,17 @@ to the roadmap:
 - **Benchmark honesty** — the `scriptc` result showed that a benchmark against
   only the engine-bundling toolchains would have looked like a landslide win
   while missing the real competitor. Keep adding toolchains as they appear.
+- **`tsrust` (ferrotype/tsr)** — TypeScript 7's Go compiler ported to Rust, with
+  upstream parity suites as its acceptance criteria. It emits JavaScript, so it
+  is not a native-binary competitor, but it is the reference for "what does a
+  serious Rust TypeScript compiler look like" — the workspace layout (a crate
+  per compiler phase: scanner, parser, binder, checker, printer, sourcemap,
+  module resolution), the arena-based ownership model instead of a GC, and the
+  parity-reporting discipline are all worth studying.
+- **An `is_pic`-style shared-settings note** — tsr pins its toolchain one
+  release behind stable and forbids `unsafe` in leaf crates with an explicit
+  allow-list for the FFI crates. A similar "why is this lint allowed here"
+  discipline would fit this project, which currently has no lint policy.
 
 ## Scorecard
 

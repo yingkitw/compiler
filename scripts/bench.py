@@ -190,6 +190,15 @@ def toolchains() -> list[Toolchain]:
             legacy=True,
         ),
         Toolchain(
+            name="tsrust + node",
+            print_stmt="console.log",
+            compile_cmd=["tsrust", "{src}", "--outDir", "{outdir}"],
+            run_cmd=["node", "{outdir}/{stem}.js"],
+            produces_binary=False,
+            note="TypeScript 7's Go compiler ported to Rust, emitting JavaScript",
+            runtime_kind="external",
+        ),
+        Toolchain(
             name="tsc + node",
             print_stmt="console.log",
             compile_cmd=["{tsjs}", "{src}", "--outDir", "{outdir}", "--skipLibCheck"],
@@ -322,6 +331,11 @@ class Result:
     note: str = ""
     is_ours: bool = False
     legacy: bool = False
+    # Set while the artifact exists, so the timing phase can run it.
+    run_cmd: list = field(default_factory=list)
+    cwd: str = ""
+    env: dict = field(default_factory=dict)
+    times: list = field(default_factory=list)
 
 
 def bench_workload(w: Workload, tc: Toolchain, n: int, reps: int, keep: Path, cache_dir: Path) -> Result:
@@ -368,19 +382,48 @@ def bench_workload(w: Workload, tc: Toolchain, n: int, reps: int, keep: Path, ca
         res.compile_cold = time_cmd(cmd, env, cwd=work)
         res.compile_warm = time_cmd(cmd, env, cwd=work)
         res.size = artifact_size(out)
-        run = [c.format(**fmt) for c in tc.run_cmd]
-        res.runtime_best, res.runtime_median, res.output = time_run(run, reps, env, cwd=work)
+        res.run_cmd = [c.format(**fmt) for c in tc.run_cmd]
+        res.cwd = str(work)
+        res.env = env
     except Exception as exc:  # noqa: BLE001 - report, don't abort the suite
         res.error = str(exc)[:400]
-    finally:
-        # The artifacts are huge (a deno binary is ~65 MiB) and the size has
-        # already been measured, so drop them instead of filling the disk.
-        if out.exists():
-            if out.is_dir():
-                shutil.rmtree(out, ignore_errors=True)
-            else:
-                out.unlink(missing_ok=True)
     return res
+
+
+def measure_round_robin(prepared: list[Result], reps: int) -> None:
+    """Time every toolchain's program in interleaved rounds.
+
+    Measuring all repetitions of one toolchain and then moving to the next
+    means a load spike on this shared machine skews exactly one toolchain.
+    Interleaving makes every toolchain see the same conditions: a round runs
+    each program once, then the next round runs them again.
+
+    This was not hypothetical — an early run reported `tsrust + node` as 3.7x
+    slower than `tsc + node` on the same workload, when a direct measurement
+    showed the two emit nearly identical JavaScript and run in the same time.
+    """
+    live = [r for r in prepared if not r.error and r.run_cmd]
+    for r in live:
+        r.times = []
+    for _ in range(reps):
+        for r in live:
+            start = time.perf_counter()
+            proc = subprocess.run(
+                r.run_cmd, capture_output=True, env=r.env, cwd=r.cwd
+            )
+            elapsed = time.perf_counter() - start
+            if proc.returncode != 0:
+                r.error = (
+                    f"run failed ({proc.returncode}): {' '.join(r.run_cmd)}\n"
+                    f"{proc.stderr.decode(errors='replace')[-1000:]}"
+                )
+                continue
+            r.times.append(elapsed)
+            r.output = proc.stdout.decode(errors="replace").strip()
+    for r in live:
+        if r.times:
+            r.runtime_best = min(r.times)
+            r.runtime_median = statistics.median(r.times)
 
 
 def spawn_overhead(reps: int = 20) -> float:
@@ -446,6 +489,9 @@ def main() -> int:
     print(f"process spawn overhead (floor for every runtime figure): {overhead * 1000:.2f}ms")
     with tempfile.TemporaryDirectory(prefix="tsc-bench-") as tmp:
         keep = Path(tmp)
+
+        # Phase 1: build every artifact for every workload.
+        prepared: list[Result] = []
         for w in WORKLOADS:
             n = w.quick_n if args.quick else w.n
             print(f"\n=== workload: {w.name} (n={n}) — {w.note}")
@@ -457,13 +503,13 @@ def main() -> int:
                 # network time, not compile time.
                 cache_dir = keep / f"cache-{tc.name.replace(' ', '_').replace('/', '_')}"
                 r = bench_workload(w, tc, n, args.reps, keep, cache_dir)
+                prepared.append(r)
                 results.append(r)
                 if r.error:
                     print(f"  {tc.name:<22} ERROR: {r.error.splitlines()[0][:80]}")
                 else:
                     print(
                         f"  {tc.name:<22} size={human_size(r.size):>11}  "
-                        f"run={r.runtime_best * 1000:9.2f}ms  "
                         f"compile_cold={r.compile_cold:6.2f}s"
                     )
 
@@ -486,14 +532,30 @@ def main() -> int:
             n = wl.quick_n if args.quick else wl.n
             cache_dir = keep / "cache-tsc-rs"
             r = bench_workload(wl, ours_tc, n, args.reps, keep, cache_dir)
+            prepared.append(r)
             results.append(r)
             if r.error:
                 print(f"  {wl_name:<22} ERROR: {r.error.splitlines()[0][:80]}")
             else:
-                print(
-                    f"  {wl_name:<22} size={human_size(r.size):>11}  "
-                    f"run={r.runtime_best * 1000:9.2f}ms"
-                )
+                print(f"  {wl_name:<22} size={human_size(r.size):>11}")
+
+        # Phase 2: time everything in interleaved rounds, so a load spike on
+        # this shared machine cannot skew one toolchain relative to the others.
+        print(f"\n=== timing ({args.reps} interleaved rounds)")
+        measure_round_robin(prepared, args.reps)
+        for r in results:
+            if not r.error and r.times:
+                print(f"  {r.workload:<10} {r.toolchain:<32} {r.runtime_best * 1000:9.2f}ms")
+
+        # Phase 3: drop the artifacts. A deno binary is 65 MiB and the size
+        # has already been measured, so keeping them would fill the disk.
+        for r in prepared:
+            for cand in (Path(r.cwd) / "prog", Path(r.cwd) / "out"):
+                if cand.exists():
+                    if cand.is_dir():
+                        shutil.rmtree(cand, ignore_errors=True)
+                    else:
+                        cand.unlink(missing_ok=True)
 
     # --- correctness: every toolchain must agree -------------------------
     print("\n=== output agreement")
