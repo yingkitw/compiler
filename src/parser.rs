@@ -196,10 +196,11 @@ impl Parser {
         let name = self.expect_ident("type")?;
         match name.as_str() {
             "number" => Ok(Type::Number),
+            "int" => Ok(Type::Int),
             "boolean" => Ok(Type::Boolean),
             "void" => Ok(Type::Void),
             _ => Err(format!(
-                "line {}: unsupported type '{}' (supported: number, boolean, void)",
+                "line {}: unsupported type '{}' (supported: number, int, boolean, void)",
                 self.line(),
                 name
             )),
@@ -321,6 +322,7 @@ impl Parser {
             let op = match self.peek() {
                 Tok::Star => BinOp::Mul,
                 Tok::Slash => BinOp::Div,
+                Tok::Percent => BinOp::Rem,
                 _ => break,
             };
             self.bump();

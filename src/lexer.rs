@@ -1,5 +1,7 @@
 //! Tokenizer for the TypeScript subset.
 
+use crate::ast::NumLit;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Tok {
     Let,
@@ -12,7 +14,7 @@ pub enum Tok {
     True,
     False,
     Ident(String),
-    Num(f64),
+    Num(NumLit),
     LParen,
     RParen,
     LBrace,
@@ -25,6 +27,7 @@ pub enum Tok {
     Minus,
     Star,
     Slash,
+    Percent,
     EqEq,
     BangEq,
     Lt,
@@ -108,8 +111,17 @@ pub fn lex(src: &str) -> Result<Vec<Token>, String> {
                     i += 1;
                 }
                 let text: String = chars[start..i].iter().collect();
+                // Parse the exact integer first when the literal is written as a
+                // plain integer: a large literal such as 9007199254740993 is
+                // not representable as an f64, and rounding it here would
+                // change the number before the compiler ever sees it.
+                let int = if text.contains('.') {
+                    None
+                } else {
+                    text.parse::<i64>().ok()
+                };
                 match text.parse::<f64>() {
-                    Ok(n) => out.push(Token { tok: Tok::Num(n), line }),
+                    Ok(value) => out.push(Token { tok: Tok::Num(NumLit::new(value, int)), line }),
                     Err(_) => err!("invalid number literal '{}'", text),
                 }
             }
@@ -155,6 +167,10 @@ pub fn lex(src: &str) -> Result<Vec<Token>, String> {
             }
             '/' => {
                 out.push(Token { tok: Tok::Slash, line });
+                i += 1;
+            }
+            '%' => {
+                out.push(Token { tok: Tok::Percent, line });
                 i += 1;
             }
             '=' if chars.get(i + 1) == Some(&'=') => {
@@ -215,6 +231,11 @@ mod tests {
         toks
     }
 
+    /// A number token with both its double and its exact integer value.
+    fn num(value: f64, int: Option<i64>) -> Tok {
+        Tok::Num(NumLit::new(value, int))
+    }
+
     #[test]
     fn lexes_keywords_and_identifiers() {
         assert_eq!(
@@ -231,7 +252,34 @@ mod tests {
 
     #[test]
     fn lexes_numbers_with_fractions() {
-        assert_eq!(kinds("1 2.5 0.5"), vec![Tok::Num(1.0), Tok::Num(2.5), Tok::Num(0.5)]);
+        assert_eq!(
+            kinds("1 2.5 0.5"),
+            vec![num(1.0, Some(1)), num(2.5, None), num(0.5, None)]
+        );
+    }
+
+    #[test]
+    fn keeps_the_exact_value_of_large_integer_literals() {
+        // 2^53 + 1 is not representable as an f64. The literal must keep its
+        // exact integer value so an `int` context sees the number that was
+        // written, not the rounded double.
+        let toks = kinds("9007199254740993");
+        match &toks[0] {
+            Tok::Num(lit) => {
+                assert_eq!(lit.int, Some(9007199254740993));
+                assert_eq!(lit.value, 9007199254740992.0); // the rounded double
+            }
+            other => panic!("expected a number, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_fractional_literal_has_no_exact_integer_value() {
+        let toks = kinds("2.5");
+        match &toks[0] {
+            Tok::Num(lit) => assert_eq!(lit.int, None),
+            other => panic!("expected a number, got {other:?}"),
+        }
     }
 
     #[test]
@@ -251,12 +299,12 @@ mod tests {
 
     #[test]
     fn skips_line_comments() {
-        assert_eq!(kinds("1 // comment\n2"), vec![Tok::Num(1.0), Tok::Num(2.0)]);
+        assert_eq!(kinds("1 // comment\n2"), vec![num(1.0, Some(1)), num(2.0, Some(2))]);
     }
 
     #[test]
     fn skips_block_comments() {
-        assert_eq!(kinds("1 /* two\nlines */ 2"), vec![Tok::Num(1.0), Tok::Num(2.0)]);
+        assert_eq!(kinds("1 /* two\nlines */ 2"), vec![num(1.0, Some(1)), num(2.0, Some(2))]);
     }
 
     #[test]

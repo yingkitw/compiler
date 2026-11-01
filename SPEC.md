@@ -34,7 +34,8 @@ tsc <input.ts> [-o <output>] [-c]
 
 | Type | Representation | Notes |
 |---|---|---|
-| `number` | IEEE-754 double (`f64`) | All numeric literals are `number`; there is no integer type |
+| `number` | IEEE-754 double (`f64`) | The default type of a numeric literal |
+| `int` | 64-bit signed integer (`i64`) | Exact arithmetic; integer division truncates toward zero |
 | `boolean` | 8-bit integer (`i8`), 0 = false, 1 = true | |
 | `void` | no value | Return type of a function with no value |
 
@@ -92,17 +93,19 @@ unary        ::= ("!" | "-") unary | call ;
 call         ::= primary ("(" args? ")")* ;
 primary      ::= NUMBER | "true" | "false" | IDENT | "(" expr ")" ;
 args         ::= expr ("," expr)* ;
-type         ::= "number" | "boolean" | "void" ;
+type         ::= "number" | "int" | "boolean" | "void" ;
 ```
 
 **Operator precedence**, loosest to tightest: assignment → `||` → `&&` →
 equality → relational → additive → multiplicative → unary → call → primary.
 Assignment is right-associative; all binary operators are left-associative.
 
-**Not supported**: `%`, `++`, `--`, compound assignment, `? :`, `for`, `do`,
+**Not supported**: `++`, `--`, compound assignment, `? :`, `for`, `do`,
 `switch`, `break`, `continue`, `throw`, `try`, object literals, array literals,
 string literals, `new`, `typeof`, `instanceof`, `in`, `of`, `delete`, `void`
 operator, `as`, generics, classes, modules, arrow functions.
+
+The `%` (remainder) operator is supported for `int` operands only.
 
 ### Statements
 
@@ -134,7 +137,7 @@ operator, `as`, generics, classes, modules, arrow functions.
 
 | Function | Signature | Behaviour |
 |---|---|---|
-| `print` | `print(number)` / `print(boolean)` | Prints the value followed by a newline |
+| `print` | `print(number)` / `print(int)` / `print(boolean)` | Prints the value followed by a newline |
 
 - `print` is reserved: it cannot be redefined.
 - Numbers print exactly like JavaScript's `Number.prototype.toString`: the
@@ -147,24 +150,47 @@ operator, `as`, generics, classes, modules, arrow functions.
 
 ### Type rules
 
-- Arithmetic (`+`, `-`, `*`, `/`) requires two `number` operands and yields
-  `number`.
-- Relational operators (`<`, `<=`, `>`, `>=`) require two `number` operands and
-  yield `boolean`.
-- Equality (`==`, `!=`) requires two operands of the *same* type (`number` with
-  `number`, `boolean` with `boolean`) and yields `boolean`.
-- `&&`, `||` accept a `boolean` or `number` operand, yield `boolean`, and
-  **short-circuit** — the right operand is not evaluated when the result is
+- Arithmetic (`+`, `-`, `*`, `/`) requires both operands to have the *same*
+  type, either two `number`s or two `int`s, and yields that type.
+  - `int` division truncates toward zero: `7 / 2` is `4` when both operands
+    are `int`.
+  - There is **no implicit conversion** between `number` and `int`. Mixing them
+    is an error.
+- `%` (remainder) requires two `int` operands and yields an `int`. There is no
+  float remainder.
+- Relational operators (`<`, `<=`, `>`, `>=`) require two `number`s or two
+  `int`s, and yield `boolean`.
+- Equality (`==`, `!=`) requires both operands to have the *same* type
+  (`number`, `int`, or `boolean`) and yields `boolean`.
+- `&&`, `||` accept a `boolean`, `number` or `int` operand, yield `boolean`,
+  and **short-circuit** — the right operand is not evaluated when the result is
   already determined.
-- `!` accepts a `boolean` or `number`, yields `boolean`.
-- Unary `-` requires a `number`, yields `number`.
-- A `number` is false iff it equals `0`.
+- `!` accepts a `boolean`, `number` or `int`, yields `boolean`.
+- Unary `-` requires a `number` or `int`, and yields that type.
+- A `number` is false iff it equals `0`; an `int` is false iff it equals `0`.
 - Assignment requires the assigned expression's type to equal the variable's
-  declared type exactly — there are no implicit conversions.
+  declared type exactly.
 - A function call's argument types must match the parameter types exactly.
 - A function whose declared return type is not `void` must return a value on
   every path.
 - A `void`-returning function may not return a value.
+
+### Integer literals
+
+A numeric literal has no fixed type of its own. It is a `number` by default,
+and becomes an `int` when its context requires one:
+
+```ts
+let a: int = 42;      // 42 is an int here
+let b = 42;           // 42 is a number here
+let c = a + 1;        // 1 is an int here, because `a` is an int
+let d = 1 + a;        // likewise, and the literal is evaluated after `a`
+```
+
+A literal used as an `int` must be integral and within the `i64` range;
+`let x: int = 4.5` is an error. A `number` variable is never implicitly
+narrowed to an `int` — that would require an explicit conversion, which the
+language does not yet have.
 
 ### Diagnostics
 
@@ -192,8 +218,8 @@ void ts_print_bool(signed char x);
 ```
 
 These are imported by the generated code under `Linkage::Import`. `double` maps
-to Cranelift's `F64` and `signed char` to `I8`, so the ABI matches exactly on
-every supported platform.
+to Cranelift's `F64`, `signed char` to `I8`, and `long long` to `I64`, so the
+ABI matches exactly on every supported platform.
 
 User-declared functions are exported as `tsfn_<name>`; the synthetic top-level
 function is `__ts_start`; the C entry point is `main`. All calls use the
