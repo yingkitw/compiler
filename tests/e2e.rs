@@ -9,7 +9,7 @@ fn out_dir() -> PathBuf {
     dir
 }
 
-fn compile_and_run(example: &str) -> String {
+fn compile_example(example: &str) -> PathBuf {
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("examples")
         .join(format!("{}.ts", example));
@@ -22,6 +22,11 @@ fn compile_and_run(example: &str) -> String {
         .status()
         .expect("failed to run tsc");
     assert!(status.success(), "compilation of {} failed", example);
+    bin
+}
+
+fn compile_and_run(example: &str) -> String {
+    let bin = compile_example(example);
 
     let out = Command::new(&bin).output().expect("failed to run binary");
     assert!(out.status.success(), "{} exited with failure", example);
@@ -114,6 +119,66 @@ fn integers_are_exact() {
          9227465\n\
          0\n"
     );
+}
+
+#[test]
+fn stack_overflow_is_reported_instead_of_crashing() {
+    // Unbounded recursion exhausts the stack. The program must fail with a
+    // diagnostic and a non-zero exit status, not die from SIGSEGV.
+    let bin = compile_example("stack_overflow");
+    let out = Command::new(&bin).output().expect("failed to run binary");
+
+    assert!(
+        !out.status.success(),
+        "expected a non-zero exit status, got {:?}",
+        out.status
+    );
+    // `code()` is `None` when the process was killed by a signal, which is
+    // exactly the failure mode this test guards against.
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "expected a clean exit with status 1, got {:?}",
+        out.status
+    );
+
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("maximum recursion depth exceeded"),
+        "unexpected stderr: {:?}",
+        stderr
+    );
+
+    // What the program printed before the overflow is preserved.
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "42\n");
+}
+
+#[test]
+fn deep_but_finite_recursion_still_works() {
+    // The detector must not reject a program that fits in the stack: 50,000
+    // frames is roughly 2.4 MiB of an 8 MiB stack.
+    let src = out_dir().join("deep_recursion.ts");
+    std::fs::write(
+        &src,
+        "function f(n: number): number {\n\
+         \x20   if (n < 1) { return 0; }\n\
+         \x20   return f(n - 1) + 1;\n\
+         }\n\
+         print(f(50000));\n",
+    )
+    .unwrap();
+    let bin = out_dir().join("deep_recursion");
+    let status = Command::new(env!("CARGO_BIN_EXE_tsc"))
+        .arg(&src)
+        .arg("-o")
+        .arg(&bin)
+        .status()
+        .expect("failed to run tsc");
+    assert!(status.success(), "compilation failed");
+
+    let out = Command::new(&bin).output().expect("failed to run binary");
+    assert!(out.status.success(), "the program exited with failure");
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "50000\n");
 }
 
 #[test]

@@ -113,7 +113,8 @@ ast::Program                   Type / Expr / Stmt trees
    │                 expression → (machine value, static type)
    │                 type error → Err(String) → abort
    ├─ __ts_start: top-level statements as a void function
-   ├─ main: C-ABI wrapper calling __ts_start, then user main, returning 0
+   ├─ main: C-ABI wrapper calling ts_runtime_init, __ts_start, then user
+   │        main, returning 0
    ▼
 Object file bytes              Mach-O / ELF, position-independent
    │  cc <obj> <runtime.c> -o <out>
@@ -125,6 +126,7 @@ native binary
 
 ```
 main (C ABI, returns i32)
+   └── ts_runtime_init     installs the stack-overflow handler
    └── __ts_start          top-level statements
          └── user main()   if declared
                └── tsfn_*  user functions

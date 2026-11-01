@@ -210,12 +210,26 @@ functions that don't return on all paths, nested function declarations,
 ## Runtime ABI
 
 The compiler emits a relocatable object file and links it with a small C
-translation unit containing exactly two functions:
+translation unit containing four functions:
 
 ```c
 void ts_print_number(double x);
 void ts_print_bool(signed char x);
+void ts_print_int(long long x);
+void ts_runtime_init(void);
 ```
+
+`ts_runtime_init` is called first by the generated C `main`. It installs a
+`SIGSEGV` handler on an alternate signal stack, so that unbounded recursion
+exhausting the stack is reported as
+
+```
+error: maximum recursion depth exceeded
+```
+
+on stderr with exit status 1, instead of killing the process. Output printed
+before the overflow is preserved. The language has no pointers, so the only
+way a compiled program can fault is by running out of stack.
 
 These are imported by the generated code under `Linkage::Import`. `double` maps
 to Cranelift's `F64`, `signed char` to `I8`, and `long long` to `I64`, so the

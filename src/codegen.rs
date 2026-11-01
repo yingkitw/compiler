@@ -16,12 +16,14 @@ use target_lexicon::Triple;
 use crate::ast::*;
 
 /// Tiny C runtime linked against the generated object. Kept minimal so the
-/// generated code only needs two well-defined (non-variadic) C ABI calls.
+/// generated code only needs a few well-defined (non-variadic) C ABI calls.
 pub const RUNTIME_C: &str = r#"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <signal.h>
+#include <unistd.h>
 
 /* Print a double the way JavaScript's Number::toString does: the shortest
  * decimal string that round-trips back to the same f64, in fixed notation for
@@ -89,6 +91,53 @@ void ts_print_number(double x) {
 void ts_print_bool(signed char x) { puts(x ? "true" : "false"); }
 
 void ts_print_int(long long x) { printf("%lld\n", x); }
+
+/* --- Stack-overflow detection -------------------------------------------
+ *
+ * Recursion without a base case exhausts the thread stack, and the process
+ * dies with SIGSEGV: the program is killed mid-way and whatever it had
+ * printed is lost with it. The generated `main` calls ts_runtime_init()
+ * before anything else; it installs a handler that turns the fault into a
+ * clean diagnostic and a non-zero exit status.
+ *
+ * Two details make this work:
+ *
+ *   - The handler runs on a separate signal stack (sigaltstack), because
+ *     the main stack is exhausted by definition when the fault arrives.
+ *   - The handler flushes stdout before writing the message, so the
+ *     program's own output survives the error.
+ *
+ * The language has no pointers, so the only way a compiled program can
+ * fault is by running out of stack. Every fault is therefore reported as a
+ * recursion overflow.
+ */
+#define TS_SIGSTACK_SIZE (256 * 1024)
+static char ts_sigstack[TS_SIGSTACK_SIZE];
+
+static void ts_on_sigsegv(int sig, siginfo_t *info, void *ctx) {
+    (void)sig; (void)info; (void)ctx;
+    /* stdout may still be holding buffered output. */
+    fflush(stdout);
+    static const char msg[] = "error: maximum recursion depth exceeded\n";
+    ssize_t ignored = write(2, msg, sizeof msg - 1);
+    (void)ignored;
+    _exit(1);
+}
+
+void ts_runtime_init(void) {
+    stack_t ss;
+    ss.ss_sp = ts_sigstack;
+    ss.ss_size = sizeof ts_sigstack;
+    ss.ss_flags = 0;
+    if (sigaltstack(&ss, NULL) != 0) return;
+
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESETHAND;
+    sa.sa_sigaction = ts_on_sigsegv;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGSEGV, &sa, NULL);
+}
 "#;
 
 /// A generated value and its static type. `None` means the expression has no
@@ -183,6 +232,15 @@ pub fn compile(prog: &Program) -> Result<Vec<u8>, String> {
             &sig_for(call_conv, &[Type::Int], Type::Void),
         )
         .map_err(|e| e.to_string())?;
+    // Installed before anything else runs: it turns a stack overflow into a
+    // clean error instead of a SIGSEGV that kills the program.
+    let runtime_init = module
+        .declare_function(
+            "ts_runtime_init",
+            Linkage::Import,
+            &sig_for(call_conv, &[], Type::Void),
+        )
+        .map_err(|e| e.to_string())?;
 
     // Pass 1: declare every top-level function so calls can appear before
     // definitions (and recursion works).
@@ -249,8 +307,17 @@ pub fn compile(prog: &Program) -> Result<Vec<u8>, String> {
         start_id, start_sig, "__ts_start", &[], Type::Void, &top,
     )?;
 
-    // C `main` wrapper: call __ts_start, then the user's main if any.
-    emit_main_wrapper(&mut module, &mut fbcx, frontend_config, call_conv, start_id, user_main)?;
+    // C `main` wrapper: initialise the runtime, call __ts_start, then the
+    // user's main if any.
+    emit_main_wrapper(
+        &mut module,
+        &mut fbcx,
+        frontend_config,
+        call_conv,
+        runtime_init,
+        start_id,
+        user_main,
+    )?;
 
     let product = module.finish();
     product.emit().map_err(|e| e.to_string())
@@ -332,6 +399,7 @@ fn emit_main_wrapper(
     fbcx: &mut FunctionBuilderContext,
     frontend_config: TargetFrontendConfig,
     call_conv: CallConv,
+    runtime_init: FuncId,
     start: FuncId,
     user_main: Option<FuncId>,
 ) -> Result<(), String> {
@@ -347,6 +415,8 @@ fn emit_main_wrapper(
         let entry = b.create_block();
         b.switch_to_block(entry);
         b.seal_block(entry);
+        let init_ref = module.declare_func_in_func(runtime_init, b.func);
+        b.ins().call(init_ref, &[]);
         let start_ref = module.declare_func_in_func(start, b.func);
         b.ins().call(start_ref, &[]);
         if let Some(m) = user_main {
@@ -996,6 +1066,21 @@ mod tests {
     fn compiles_a_minimal_program() {
         let obj = compiles("print(1);");
         assert!(!obj.is_empty(), "expected a non-empty object file");
+    }
+
+    #[test]
+    fn the_object_references_the_runtime_entry_points() {
+        // The generated `main` calls `ts_runtime_init` before anything else:
+        // that call is what installs the stack-overflow handler, so the
+        // object file must reference it.
+        let obj = compiles("print(1);");
+        for symbol in ["ts_runtime_init", "ts_print_number"] {
+            assert!(
+                obj.windows(symbol.len()).any(|w| w == symbol.as_bytes()),
+                "the object file does not reference `{}`",
+                symbol
+            );
+        }
     }
 
     // --- the `int` type ----------------------------------------------------

@@ -6,7 +6,7 @@
 A tiny TypeScript-subset compiler that emits **native binaries**, written in Rust.
 
 Hand-written lexer and recursive-descent parser, type-checking code generation on
-top of [Cranelift](https://cranelift.dev/), and a two-function C runtime linked
+top of [Cranelift](https://cranelift.dev/), and a small C runtime linked
 with the system C compiler. No LLVM, no JavaScript engine, no runtime
 dependency beyond libc.
 
@@ -110,7 +110,7 @@ The checker is strict — there are no implicit conversions.
 - Assignment requires the value's type to match the variable's type exactly.
 - A function whose return type isn't `void` must return a value on every path.
 
-Errors are reported at compile time, not at runtime:
+Type errors are reported at compile time, not at runtime:
 
 ```
 $ tsc bad.ts
@@ -138,13 +138,18 @@ error: cannot initialize 'x: number' with a value of type boolean
 | `src/ast.rs` | Shared AST types — the contract between parser and codegen |
 | `src/codegen.rs` | One pass that type-checks **and** emits Cranelift IR: SSA variables, basic blocks for `if`/`while`, and for short-circuit `&&` / `\|\|` |
 
-Two design points worth knowing:
+Three design points worth knowing:
 
 - **A tiny C runtime instead of variadic `printf`.** The generated code imports
   `ts_print_number(double)` and `ts_print_bool(signed char)` — fixed-arity
   functions with an unambiguous ABI, linked alongside the object file.
 - **Position-independent code is always on.** Without it, external calls fail to
   link on macOS arm64 with "Illegal text-relocations".
+- **A stack overflow is an error, not a crash.** Unbounded recursion used to
+  kill the process with `SIGSEGV`. The runtime now installs a handler on an
+  alternate signal stack, so the program reports
+  `error: maximum recursion depth exceeded` and exits with status 1 — and
+  whatever it printed before the overflow is preserved.
 
 Read [ARCHITECTURE.md](ARCHITECTURE.md) for the full design rationale, and
 [SPEC.md](SPEC.md) for the complete grammar and CLI contract.

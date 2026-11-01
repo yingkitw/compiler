@@ -23,6 +23,13 @@
       in an `int` function used to be rejected, because the return statement did
       not pass the expected type to the expression. Found while writing a
       benchmark program, fixed, and covered by a regression test
+- [x] **Stack-overflow detection** — unbounded recursion used to exhaust the
+      stack and die with SIGSEGV, killing the program and losing whatever it
+      had printed. The runtime now installs a SIGSEGV handler on an alternate
+      signal stack and turns the fault into "error: maximum recursion depth
+      exceeded" with exit status 1; output printed before the overflow is
+      preserved (stdout is flushed first). The language has no pointers, so
+      the only way a compiled program can fault is by running out of stack
 - [x] **Cranelift backend** — SSA variables, `if`/`else`, `while`, short-circuit
       `&&` / `||`, recursion, forward references, two-pass function collection
 - [x] **Native binary output** — Mach-O/ELF object via `cranelift-object`, linked
@@ -36,7 +43,7 @@
       tree, ARCHITECTURE.md mentions, TODO.md test counts, and README doc links
 
 ### Quality
-- [x] **80 inline unit tests + 17 integration tests** — all passing; `cargo clippy
+- [x] **81 inline unit tests + 19 integration tests** — all passing; `cargo clippy
       --all-targets` exits 0; doc-sync enforced by `tests/docs_sync.rs`
 - [x] **Inline unit tests for the lexer, parser, and type rules** — 13 lexer tests
       (token kinds, comments, line tracking, exact integer literals, lex errors),
@@ -74,14 +81,6 @@
 ## Next
 
 ### High priority
-- [ ] **Stack-overflow detection** — deep recursion currently **segfaults**: a
-      30-million-deep chain exhausts the 8 MiB main-thread stack and the
-      process dies with SIGSEGV, taking the whole program with it. `scriptc`
-      checks the stack pointer against a limit on function entry and reports
-      a clean error (`_scr_stack_overflow` in its disassembly). Same approach
-      here: compare `sp` against a limit at function entry, and report
-      "maximum recursion depth exceeded" instead of crashing. This is a
-      correctness and robustness bug, not a performance one
 - [ ] **Close the recursion gap to scriptc — and profile before guessing.**
       Our `fib` is ~1.7x slower than scriptc's (29 ms vs 50 ms compute).
       Ruled out so far: instruction count (scriptc executes *more* — 28 vs our
@@ -189,6 +188,7 @@ Recorded per AGENTS.md Step 7. Total is /30.
 | 2026-11-01 | 4 | 4 | 3 | 4 | 4 | 5 | 24 |
 | 2026-11-01 (post-benchmark) | 5 | 4 | 4 | 5 | 4 | 5 | 27 |
 | 2026-11-01 (post-int) | 5 | 4 | 4 | 5 | 5 | 5 | 28 |
+| 2026-11-01 (post-stack-guard) | 5 | 4 | 4 | 5 | 5 | 5 | 28 |
 
 **Evidence (2026-11-01, post-int)**:
 - *Correctness 5/5*: `cargo test` green — 80 inline unit tests + 17 integration
@@ -201,9 +201,9 @@ Recorded per AGENTS.md Step 7. Total is /30.
   arm64. Benchmarked against deno, bun, scriptc, tsrust, tsc and our own
   published build: **~2000x smaller artifacts than the engine-bundling
   toolchains, ~2.5x faster startup, fastest compile time**, and within noise of
-  scriptc on tight loops. Not 5 — a ~1.7x recursion gap to scriptc remains
-  (profiling queued), and deep recursion segfaults instead of reporting an
-  error.
+  scriptc on tight loops. Unbounded recursion is now reported cleanly instead
+  of crashing. Not 5 — a ~1.7x recursion gap to scriptc remains (profiling
+  queued), and there is no cross-platform or UB/valgrind pass.
 - *Maintainability 4/5*: `codegen.rs` is still one large `FnGen` impl, but it
   is covered by 45 unit tests, so the risk of changing it is measured rather
   than assumed. Clippy clean.
