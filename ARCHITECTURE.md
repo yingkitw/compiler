@@ -181,6 +181,33 @@ platform-specific. Two fixed-arity functions have an unambiguous ABI.
 compiler is required. The alternative — emitting the print logic in Cranelift
 itself — would need a string-conversion routine and more runtime code.
 
+### Number printing follows JavaScript, not `printf("%g")`
+**Decision**: `ts_print_number` implements JavaScript's
+`Number.prototype.toString` — the shortest decimal that round-trips back to the
+same `f64`, in fixed notation for decimal exponents in [-6, 21] and exponential
+notation otherwise.
+**Why**: `%g` keeps only six significant digits, so `print(333333283333717100000)`
+printed `3.33333e+20` — a *different number* from the one computed. A
+TypeScript compiler whose output disagrees with TypeScript's own semantics is
+wrong, not merely imprecise. The competitive benchmark caught this: the
+harness requires every toolchain to print identical output, and only the
+JavaScript toolchains matched each other.
+**Trade-off**: the runtime grew from one line to roughly ninety, and
+`print(3.14159 * 2 * 2)` changed from `12.5664` to `12.56636` — a visible
+behaviour change, but the old value was lossy.
+
+### A competitive benchmark in the loop
+**Decision**: `scripts/bench.py` compiles the same programs with every
+toolchain that can turn TypeScript into something runnable — including
+`scriptc`, the only other engine-free native compiler — and the report is
+committed to `bench/RESULTS.md`.
+**Why**: the advantage has to be measured. Comparing only against `deno` and
+`bun` would have shown a 2000x size win while missing the competitor that
+actually matters.
+**Trade-off**: the harness depends on other toolchains being installed, and
+needs disk space for their (very large) artifacts. It skips whatever is
+missing and reports that it skipped.
+
 ### Linking with the system C compiler
 **Decision**: emit an object file and run `cc` on it, rather than writing an
 ELF/Mach-O linker.

@@ -78,6 +78,7 @@ pub enum Stmt {
     Expr(Expr),
 }
 
+#[derive(Debug)]
 pub struct Program {
     pub stmts: Vec<Stmt>,
 }

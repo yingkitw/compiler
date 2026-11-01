@@ -121,7 +121,7 @@ error: cannot initialize 'x: number' with a value of type boolean
 
 | Function | Behaviour |
 |---|---|
-| `print(number)` | Prints the value and a newline (`42`, `12.5664`) |
+| `print(number)` | Prints the value and a newline (`42`, `12.56636`) — formatted exactly like JavaScript's `Number.prototype.toString` |
 | `print(boolean)` | Prints `true` or `false` |
 
 ## How it works
@@ -160,6 +160,41 @@ This is a compiler for a *subset*, not a TypeScript implementation. It is meant
 as a readable reference for how a native code generator is put together — and as
 a fast way to turn small numeric programs into fast binaries.
 
+## Benchmark
+
+The same program, compiled by every toolchain that can turn TypeScript into
+something runnable. Every toolchain must print the same result — the harness
+fails if they disagree.
+
+| | tsc-rs (ours) | scriptc | deno compile | bun --compile | tsc + node |
+|---|---|---|---|---|---|
+| **Artifact size** | **33 KiB** | 90 KiB | 65 MiB | 60 MiB | 119 B JS + system Node |
+| **Startup** | 8.0 ms | 7.4 ms | 16.1 ms | 18.4 ms | 135 ms |
+| **Compile time** | **0.12 s** | 0.47 s | 1.33 s | 0.74 s | 0.39 s |
+| **fib(35) compute** | 43 ms | **27 ms** | 95 ms | 52 ms | 113 ms |
+| **loop(1e8) compute** | **101 ms** | 105 ms | 100 ms | 104 ms | 108 ms |
+
+Full numbers, methodology, and the raw report: [`bench/RESULTS.md`](bench/RESULTS.md).
+Regenerate with `python3 scripts/bench.py`.
+
+**Where we win.** `deno compile` and `bun build --compile` embed a JavaScript
+engine (V8 / JavaScriptCore) in the binary. We compile to machine code, so
+there is no engine to ship and nothing to initialise at startup — a 33 KiB
+binary instead of 60 MiB, ~2000x smaller, and 2-3x faster to start. We also
+compile ~3-10x faster than the engine-bundling toolchains.
+
+**Where we lose.** The honest comparison is [`scriptc`](https://scriptc.dev)
+(Vercel Labs), the only other engine-free native TypeScript compiler: it
+beats us on call-heavy code (fib: 27 ms vs our 43 ms) and edges us on
+startup. We beat it on binary size (33 KiB vs 90 KiB) and compile time
+(0.12 s vs 0.47 s). The likely cause of the fib gap is that we have only
+`f64` — scriptc uses integers there, and integer compares and adds are
+cheaper than float ones. Adding an `int` type is the top of the backlog.
+
+**Where nobody wins.** On a tight numeric counting loop, V8 and
+JavaScriptCore are excellent at that shape, and Cranelift's optimiser does
+not beat a mature JIT — we are within noise of all of them (~1.0x).
+
 ## Testing
 
 ```sh
@@ -177,6 +212,7 @@ generated IR.
 | [SPEC.md](SPEC.md) | CLI contract, grammar, type rules, runtime ABI |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Module relationships, data flow, design decisions |
 | [TODO.md](TODO.md) | Roadmap, completed work, scorecard |
+| [bench/RESULTS.md](bench/RESULTS.md) | Competitive benchmark against deno, bun, and tsc+node |
 
 `AGENTS.md` and `MEMORY.md` are agent-local working documents — the development
 loop and the harvested knowledge base. They are gitignored and not shipped with

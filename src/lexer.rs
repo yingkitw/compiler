@@ -203,3 +203,92 @@ pub fn lex(src: &str) -> Result<Vec<Token>, String> {
     out.push(Token { tok: Tok::Eof, line });
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Token kinds only, dropping line numbers and the trailing EOF.
+    fn kinds(src: &str) -> Vec<Tok> {
+        let mut toks: Vec<Tok> = lex(src).expect("lex failed").into_iter().map(|t| t.tok).collect();
+        toks.pop(); // EOF
+        toks
+    }
+
+    #[test]
+    fn lexes_keywords_and_identifiers() {
+        assert_eq!(
+            kinds("let x = true;"),
+            vec![
+                Tok::Let,
+                Tok::Ident("x".into()),
+                Tok::Assign,
+                Tok::True,
+                Tok::Semi
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_numbers_with_fractions() {
+        assert_eq!(kinds("1 2.5 0.5"), vec![Tok::Num(1.0), Tok::Num(2.5), Tok::Num(0.5)]);
+    }
+
+    #[test]
+    fn lexes_two_character_operators() {
+        assert_eq!(
+            kinds("== != <= >= && ||"),
+            vec![
+                Tok::EqEq,
+                Tok::BangEq,
+                Tok::LtEq,
+                Tok::GtEq,
+                Tok::AndAnd,
+                Tok::OrOr
+            ]
+        );
+    }
+
+    #[test]
+    fn skips_line_comments() {
+        assert_eq!(kinds("1 // comment\n2"), vec![Tok::Num(1.0), Tok::Num(2.0)]);
+    }
+
+    #[test]
+    fn skips_block_comments() {
+        assert_eq!(kinds("1 /* two\nlines */ 2"), vec![Tok::Num(1.0), Tok::Num(2.0)]);
+    }
+
+    #[test]
+    fn tracks_line_numbers() {
+        let toks = lex("let a;\nlet b;\nlet c;").unwrap();
+        let lines: Vec<u32> = toks.iter().map(|t| t.line).collect();
+        // 3 statements x 3 tokens each, then EOF on the last line.
+        assert_eq!(lines, vec![1, 1, 1, 2, 2, 2, 3, 3, 3, 3]);
+    }
+
+    #[test]
+    fn counts_lines_inside_block_comments() {
+        let toks = lex("/*\n\n\n*/ let x;").unwrap();
+        assert_eq!(toks[0].line, 4);
+    }
+
+    #[test]
+    fn rejects_unexpected_character() {
+        let err = lex("let x = @;").unwrap_err();
+        assert!(err.contains("unexpected character '@'"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_unterminated_block_comment() {
+        let err = lex("/* never closed").unwrap_err();
+        assert!(err.contains("unterminated block comment"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_invalid_number() {
+        // "1.2.3" lexes as one run of digits and dots, which is not a number.
+        let err = lex("1.2.3").unwrap_err();
+        assert!(err.contains("invalid number literal"), "got: {err}");
+    }
+}

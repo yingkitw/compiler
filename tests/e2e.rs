@@ -70,7 +70,29 @@ fn control() {
 
 #[test]
 fn main_fn() {
-    assert_eq!(compile_and_run("main"), "42\ntrue\n12.5664\n");
+    assert_eq!(compile_and_run("main"), "42\ntrue\n12.56636\n");
+}
+
+#[test]
+fn number_formatting_matches_javascript() {
+    // Regression test: printing used to use "%g", which silently truncated to
+    // six significant digits. The runtime now emits the shortest decimal
+    // string that round-trips, exactly like JavaScript's Number::toString.
+    assert_eq!(
+        compile_and_run("numbers"),
+        "42\n\
+         12.56636\n\
+         0.5\n\
+         0.1\n\
+         1000000\n\
+         100000000000000000000\n\
+         1e+21\n\
+         0.000001\n\
+         1e-7\n\
+         0.3333333333333333\n\
+         Infinity\n\
+         -0.5\n"
+    );
 }
 
 #[test]

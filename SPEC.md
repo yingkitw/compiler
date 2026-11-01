@@ -137,7 +137,11 @@ operator, `as`, generics, classes, modules, arrow functions.
 | `print` | `print(number)` / `print(boolean)` | Prints the value followed by a newline |
 
 - `print` is reserved: it cannot be redefined.
-- Numbers print with `%g` formatting (`42`, `12.5664`).
+- Numbers print exactly like JavaScript's `Number.prototype.toString`: the
+  shortest decimal string that round-trips back to the same `f64`, in fixed
+  notation for decimal exponents in [-6, 21] and exponential notation
+  otherwise (`42`, `12.56636`, `0.3333333333333333`, `1e+21`, `1e-7`).
+  `NaN` prints as `NaN`, division by zero as `Infinity`, and `-0` as `0`.
 - Booleans print as `true` / `false`.
 - There is no `print` overload for `void`; printing a void expression is an error.
 

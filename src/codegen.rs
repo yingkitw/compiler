@@ -19,7 +19,73 @@ use crate::ast::*;
 /// generated code only needs two well-defined (non-variadic) C ABI calls.
 pub const RUNTIME_C: &str = r#"
 #include <stdio.h>
-void ts_print_number(double x) { printf("%g\n", x); }
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+
+/* Print a double the way JavaScript's Number::toString does: the shortest
+ * decimal string that round-trips back to the same f64, in fixed notation for
+ * decimal exponents in [-6, 21] and exponential notation otherwise.
+ * Printing "%g" instead would silently drop precision beyond six
+ * significant digits. */
+void ts_print_number(double x) {
+    if (isnan(x)) { puts("NaN"); return; }
+    if (isinf(x)) { puts(x < 0 ? "-Infinity" : "Infinity"); return; }
+    if (x == 0.0) { puts("0"); return; }
+
+    int neg = x < 0;
+    double a = neg ? -x : x;
+
+    /* Shortest round-tripping representation: try 1..17 significant digits. */
+    char buf[64];
+    int prec, exp10 = 0;
+    for (prec = 1; prec <= 17; prec++) {
+        snprintf(buf, sizeof buf, "%.*e", prec - 1, a);
+        if (strtod(buf, NULL) == a) break;
+    }
+
+    /* Split into digits and exponent: value == 0.<digits> * 10^n */
+    char digits[32];
+    int k = 0, i = 0;
+    while (buf[i] && buf[i] != 'e') {
+        if (buf[i] != '.') digits[k++] = buf[i];
+        i++;
+    }
+    if (buf[i] == 'e') exp10 = atoi(buf + i + 1);
+    while (k > 1 && digits[k - 1] == '0') k--;
+    digits[k] = '\0';
+    int n = exp10 + 1;
+
+    char out[80];
+    char *p = out;
+    if (neg) *p++ = '-';
+    if (k <= n && n <= 21) {
+        memcpy(p, digits, (size_t)k); p += k;
+        for (int j = 0; j < n - k; j++) *p++ = '0';
+    } else if (0 < n && n <= 21) {
+        memcpy(p, digits, (size_t)n); p += n;
+        *p++ = '.';
+        memcpy(p, digits + n, (size_t)(k - n)); p += k - n;
+    } else if (-6 < n && n <= 0) {
+        *p++ = '0'; *p++ = '.';
+        for (int j = 0; j < -n; j++) *p++ = '0';
+        memcpy(p, digits, (size_t)k); p += k;
+    } else {
+        *p++ = digits[0];
+        if (k > 1) {
+            *p++ = '.';
+            memcpy(p, digits + 1, (size_t)(k - 1)); p += k - 1;
+        }
+        *p++ = 'e';
+        int e = n - 1;
+        *p++ = e < 0 ? '-' : '+';
+        if (e < 0) e = -e;
+        p += sprintf(p, "%d", e);
+    }
+    *p = '\0';
+    puts(out);
+}
+
 void ts_print_bool(signed char x) { puts(x ? "true" : "false"); }
 "#;
 
@@ -678,5 +744,200 @@ impl<'a> FnGen<'a> {
                 self.b.ins().return_(&[z]);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexer;
+    use crate::parser;
+
+    /// Compile a source snippet, expecting it to be rejected, and return the
+    /// diagnostic. These cover the type rules that live inside `FnGen`.
+    fn type_error(src: &str) -> String {
+        let prog = parser::parse(lexer::lex(src).expect("lex failed")).expect("parse failed");
+        compile(&prog).expect_err("expected a type error, but compilation succeeded")
+    }
+
+    /// Compile a source snippet, expecting it to succeed.
+    fn compiles(src: &str) -> Vec<u8> {
+        let prog = parser::parse(lexer::lex(src).expect("lex failed")).expect("parse failed");
+        compile(&prog).expect("expected compilation to succeed")
+    }
+
+    #[test]
+    fn compiles_a_minimal_program() {
+        let obj = compiles("print(1);");
+        assert!(!obj.is_empty(), "expected a non-empty object file");
+    }
+
+    #[test]
+    fn compiles_a_program_with_no_statements() {
+        // An empty program is valid and produces a do-nothing binary.
+        let obj = compiles("");
+        assert!(!obj.is_empty());
+    }
+
+    #[test]
+    fn rejects_arithmetic_on_booleans() {
+        let err = type_error("let x = 1 + true;");
+        assert!(err.contains("arithmetic operators require numbers"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_relational_operators_on_booleans() {
+        let err = type_error("let x = true < false;");
+        assert!(err.contains("relational operators require numbers"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_comparing_mismatched_types() {
+        let err = type_error("let x = 1 == true;");
+        assert!(err.contains("cannot compare number with boolean"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_initializer_type_mismatch() {
+        let err = type_error("let x: number = true;");
+        assert!(err.contains("cannot initialize 'x: number'"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_assignment_type_mismatch() {
+        let err = type_error("let x: number = 1; x = true;");
+        assert!(err.contains("cannot assign boolean to 'x: number'"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_assignment_to_const() {
+        let err = type_error("const c = 1; c = 2;");
+        assert!(err.contains("cannot assign to const 'c'"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_undefined_variable() {
+        let err = type_error("print(nope);");
+        assert!(err.contains("undefined variable 'nope'"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_undefined_function() {
+        let err = type_error("nope();");
+        assert!(err.contains("undefined function 'nope'"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_wrong_argument_count() {
+        let err = type_error("function f(a: number): void { }\nf(1, 2);");
+        assert!(err.contains("'f' takes 1 arguments, got 2"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_wrong_argument_type() {
+        let err = type_error("function f(a: number): void { }\nf(true);");
+        assert!(err.contains("argument of 'f' must be number, got boolean"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_missing_return() {
+        let err = type_error("function f(): number { let a = 1; }");
+        assert!(err.contains("must return number on all paths"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_returning_a_value_from_a_void_function() {
+        let err = type_error("function f(): void { return 1; }");
+        assert!(err.contains("cannot return a value from a void function"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_returning_the_wrong_type() {
+        let err = type_error("function f(): number { return true; }");
+        assert!(err.contains("cannot return boolean from a function returning number"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_bare_return_from_a_value_function() {
+        let err = type_error("function f(): number { return; }");
+        assert!(err.contains("must return a value of type number"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_printing_void() {
+        let err = type_error("function f(): void { }\nprint(f());");
+        assert!(err.contains("cannot print void"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_redefining_print() {
+        let err = type_error("function print(x: number): void { }");
+        assert!(err.contains("'print' is a built-in"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_a_main_with_parameters() {
+        let err = type_error("function main(a: number): void { }");
+        assert!(err.contains("`main` must be declared as `function main(): void`"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_a_main_returning_a_value() {
+        let err = type_error("function main(): number { return 1; }");
+        assert!(err.contains("`main` must be declared as `function main(): void`"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_nested_function_declarations() {
+        let err = type_error("function outer(): void { function inner(): void { } }");
+        assert!(err.contains("nested function declarations are not supported"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_redeclaring_a_variable_in_the_same_scope() {
+        let err = type_error("let x = 1; let x = 2;");
+        assert!(err.contains("already declared in this scope"), "got: {err}");
+    }
+
+    #[test]
+    fn accepts_shadowing_in_a_nested_scope() {
+        // A nested block may reuse a name; only same-scope reuse is an error.
+        compiles("let x = 1; { let x = 2; }");
+    }
+
+    #[test]
+    fn accepts_short_circuit_operands_of_either_type() {
+        compiles("let a = true && 1;");
+        compiles("let b = 0 || false;");
+    }
+
+    #[test]
+    fn accepts_a_forward_reference_to_a_later_function() {
+        compiles("f();\nfunction f(): void { }");
+    }
+
+    #[test]
+    fn accepts_recursion() {
+        compiles("function f(n: number): number { if (n < 1) { return n; } return f(n - 1); }");
+    }
+
+    #[test]
+    fn accepts_an_if_without_an_else() {
+        compiles("let x = 1; if (x > 0) { print(x); }");
+    }
+
+    #[test]
+    fn accepts_a_while_loop() {
+        compiles("let i = 0; while (i < 3) { i = i + 1; }");
+    }
+
+    #[test]
+    fn accepts_top_level_statements_alongside_main() {
+        compiles("print(1);\nfunction main(): void { print(2); }");
+    }
+
+    #[test]
+    fn accepts_a_void_function_without_a_return() {
+        compiles("function f(): void { }");
     }
 }
