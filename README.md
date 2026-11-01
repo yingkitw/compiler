@@ -66,6 +66,19 @@ functions, missing returns, ...) are reported at compile time.
 cargo test    # compiles and runs every example, plus type-error cases
 ```
 
+## Documentation
+
+| Doc | Purpose |
+|---|---|
+| [SPEC.md](SPEC.md) | CLI contract, grammar, type rules, runtime ABI |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Module relationships, data flow, design decisions |
+| [TODO.md](TODO.md) | Roadmap, completed work, scorecard |
+| [AGENTS.md](AGENTS.md) | The development loop for agents and contributors |
+| [MEMORY.md](MEMORY.md) | Harvested patterns and hard-won compiler knowledge |
+
+`AGENTS.md` and `MEMORY.md` are gitignored — they are agent-local working
+documents, recreated per checkout.
+
 ## Not supported (yet)
 
 Strings, arrays, objects, classes, closures, generics, modules, `for` loops,

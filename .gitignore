@@ -1,1 +1,18 @@
+# Rust build artifacts
 /target
+
+# Agent-local working docs: kept in the working tree, not in the repo.
+# AGENTS.md is the development loop; MEMORY.md is the harvested knowledge
+# base. Both are personal to one checkout and are recreated per machine.
+AGENTS.md
+MEMORY.md
+
+# Compiled output from the examples (e.g. examples/fib.ts -> examples/fib)
+examples/hello
+examples/fib
+examples/control
+examples/main
+*.o
+
+# macOS
+.DS_Store
