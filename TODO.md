@@ -33,24 +33,26 @@
 - [x] **Cranelift backend** — SSA variables, `if`/`else`, `while`, short-circuit
       `&&` / `||`, recursion, forward references, two-pass function collection
 - [x] **Native binary output** — Mach-O/ELF object via `cranelift-object`, linked
-      with `cc` against an embedded C runtime shim (`ts_print_number` / `ts_print_bool`)
+      with `cc` against an embedded C runtime shim (`ts_print_number` /
+      `ts_print_bool` / `ts_print_int` / `ts_runtime_init`)
 - [x] **Entry points** — top-level statements (`__ts_start`) run before a user
       `function main(): void`; a C-ABI `main` wrapper drives both
 - [x] **CLI** — `tsc <input.ts> [-o <output>] [-c]`, `--help`, exit codes 0/1/2
 - [x] **PIC** — `is_pic` enabled so external calls link on macOS arm64
-- [x] **Examples** — `hello.ts`, `fib.ts`, `control.ts`, `main.ts`
+- [x] **Examples** — `hello.ts`, `fib.ts`, `control.ts`, `main.ts`, `numbers.ts`,
+      `integers.ts`, `stack_overflow.ts`
 - [x] **Doc-sync enforcement** — `tests/docs_sync.rs` checks the AGENTS.md module
       tree, ARCHITECTURE.md mentions, TODO.md test counts, and README doc links
 
 ### Quality
 - [x] **81 inline unit tests + 19 integration tests** — all passing; `cargo clippy
       --all-targets` exits 0; doc-sync enforced by `tests/docs_sync.rs`
-- [x] **Inline unit tests for the lexer, parser, and type rules** — 13 lexer tests
+- [x] **Inline unit tests for the lexer, parser, and type rules** — 12 lexer tests
       (token kinds, comments, line tracking, exact integer literals, lex errors),
-      21 parser tests (precedence, associativity, statement forms, parse errors),
-      46 codegen tests (every type rule in `FnGen`, the `int` type, plus
-      acceptance cases for scoping, shadowing, recursion, and forward
-      references)
+      23 parser tests (precedence, associativity, statement forms, parse errors),
+      46 codegen tests (every type rule in `FnGen`, the `int` type, the runtime
+      entry points, plus acceptance cases for scoping, shadowing, recursion, and
+      forward references)
 - [x] **Wiring guard** — a test that drives one program per AST variant and
       asserts the compiler never panics, plus a test that rejected programs
       always produce a diagnostic and never a successful compile
