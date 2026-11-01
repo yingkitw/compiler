@@ -1,0 +1,110 @@
+//! End-to-end tests: compile each example to a native binary and run it.
+
+use std::path::PathBuf;
+use std::process::Command;
+
+fn out_dir() -> PathBuf {
+    let dir = std::env::temp_dir().join("tsc-tests");
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn compile_and_run(example: &str) -> String {
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples")
+        .join(format!("{}.ts", example));
+    let bin = out_dir().join(example);
+
+    let status = Command::new(env!("CARGO_BIN_EXE_tsc"))
+        .arg(&src)
+        .arg("-o")
+        .arg(&bin)
+        .status()
+        .expect("failed to run tsc");
+    assert!(status.success(), "compilation of {} failed", example);
+
+    let out = Command::new(&bin).output().expect("failed to run binary");
+    assert!(out.status.success(), "{} exited with failure", example);
+    String::from_utf8(out.stdout).unwrap()
+}
+
+fn compile_fails(source: &str, expected_error: &str) {
+    let dir = out_dir();
+    // Unique name per case: tests run in parallel.
+    let tag = expected_error.replace(|c: char| !c.is_alphanumeric(), "_");
+    let src = dir.join(format!("bad_{}.ts", tag));
+    std::fs::write(&src, source).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_tsc"))
+        .arg(&src)
+        .arg("-o")
+        .arg(dir.join(format!("bad_{}", tag)))
+        .output()
+        .expect("failed to run tsc");
+    assert!(!out.status.success(), "expected compilation to fail");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains(expected_error),
+        "expected error containing {:?}, got {:?}",
+        expected_error,
+        stderr
+    );
+}
+
+#[test]
+fn hello() {
+    assert_eq!(compile_and_run("hello"), "42\n");
+}
+
+#[test]
+fn fib() {
+    assert_eq!(compile_and_run("fib"), "6765\n");
+}
+
+#[test]
+fn control() {
+    assert_eq!(
+        compile_and_run("control"),
+        "45\ntrue\n1\nfalse\ntrue\ntrue\n"
+    );
+}
+
+#[test]
+fn main_fn() {
+    assert_eq!(compile_and_run("main"), "42\ntrue\n12.5664\n");
+}
+
+#[test]
+fn type_mismatch_rejected() {
+    compile_fails("let x: number = true;", "cannot initialize 'x: number'");
+}
+
+#[test]
+fn const_assignment_rejected() {
+    compile_fails("const c = 1; c = 2;", "cannot assign to const 'c'");
+}
+
+#[test]
+fn undefined_variable_rejected() {
+    compile_fails("print(nope);", "undefined variable 'nope'");
+}
+
+#[test]
+fn missing_return_rejected() {
+    compile_fails(
+        "function f(): number { let a = 1; }",
+        "must return number on all paths",
+    );
+}
+
+#[test]
+fn bad_arithmetic_rejected() {
+    compile_fails("let x = 1 + true;", "arithmetic operators require numbers");
+}
+
+#[test]
+fn wrong_arg_count_rejected() {
+    compile_fails(
+        "function f(a: number): void {}\nf(1, 2);",
+        "'f' takes 1 arguments, got 2",
+    );
+}
