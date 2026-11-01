@@ -92,6 +92,11 @@ void ts_print_bool(signed char x) { puts(x ? "true" : "false"); }
 
 void ts_print_int(long long x) { printf("%lld\n", x); }
 
+/* Remainder for doubles. Cranelift has no float remainder instruction, so
+ * this calls libm. C's fmod truncates toward zero and takes the sign of the
+ * dividend, which is exactly what JavaScript's % does. */
+double ts_fmod(double x, double y) { return fmod(x, y); }
+
 /* --- Stack-overflow detection -------------------------------------------
  *
  * Recursion without a base case exhausts the thread stack, and the process
@@ -241,6 +246,14 @@ pub fn compile(prog: &Program) -> Result<Vec<u8>, String> {
             &sig_for(call_conv, &[], Type::Void),
         )
         .map_err(|e| e.to_string())?;
+    // Float remainder: Cranelift has no `frem`, so it goes through libm.
+    let fmod = module
+        .declare_function(
+            "ts_fmod",
+            Linkage::Import,
+            &sig_for(call_conv, &[Type::Number, Type::Number], Type::Number),
+        )
+        .map_err(|e| e.to_string())?;
 
     // Pass 1: declare every top-level function so calls can appear before
     // definitions (and recursion works).
@@ -286,7 +299,7 @@ pub fn compile(prog: &Program) -> Result<Vec<u8>, String> {
             let sig = sig_for(call_conv, &fs.params, fs.ret);
             define_body(
                 &mut module, &mut fbcx, frontend_config, &funcs, print_num, print_bool, print_int,
-                fs.id, sig, name, params, fs.ret, body,
+                fmod, fs.id, sig, name, params, fs.ret, body,
             )?;
         }
     }
@@ -304,7 +317,7 @@ pub fn compile(prog: &Program) -> Result<Vec<u8>, String> {
         .map_err(|e| e.to_string())?;
     define_body(
         &mut module, &mut fbcx, frontend_config, &funcs, print_num, print_bool, print_int,
-        start_id, start_sig, "__ts_start", &[], Type::Void, &top,
+        fmod, start_id, start_sig, "__ts_start", &[], Type::Void, &top,
     )?;
 
     // C `main` wrapper: initialise the runtime, call __ts_start, then the
@@ -332,6 +345,7 @@ fn define_body(
     print_num: FuncId,
     print_bool: FuncId,
     print_int: FuncId,
+    fmod: FuncId,
     id: FuncId,
     sig: Signature,
     name: &str,
@@ -357,6 +371,7 @@ fn define_body(
             print_num,
             print_bool,
             print_int,
+            fmod,
             scopes: Vec::new(),
             ret,
         };
@@ -441,6 +456,7 @@ struct FnGen<'a> {
     print_num: FuncId,
     print_bool: FuncId,
     print_int: FuncId,
+    fmod: FuncId,
     scopes: Vec<HashMap<String, Slot>>,
     ret: Type,
 }
@@ -737,16 +753,21 @@ impl<'a> FnGen<'a> {
                         Ok((Some(v), Type::Int))
                     }
                     (Type::Number, Type::Number) => {
-                        if op == BinOp::Rem {
-                            return Err(
-                                "the remainder operator requires integer operands".into()
-                            );
-                        }
                         let v = match op {
                             BinOp::Add => self.b.ins().fadd(lv, rv),
                             BinOp::Sub => self.b.ins().fsub(lv, rv),
                             BinOp::Mul => self.b.ins().fmul(lv, rv),
                             BinOp::Div => self.b.ins().fdiv(lv, rv),
+                            // No float remainder instruction exists, so this
+                            // goes through libm. C's fmod truncates toward
+                            // zero and takes the sign of the dividend, which
+                            // is what JavaScript's % does.
+                            BinOp::Rem => {
+                                let fref =
+                                    self.module.declare_func_in_func(self.fmod, self.b.func);
+                                let call = self.b.ins().call(fref, &[lv, rv]);
+                                self.b.func.dfg.inst_results(call)[0]
+                            }
                             _ => unreachable!(),
                         };
                         Ok((Some(v), Type::Number))
@@ -1135,9 +1156,20 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_float_remainder() {
-        let err = type_error("print(5.0 % 2.0);");
-        assert!(err.contains("remainder operator requires integer operands"), "got: {err}");
+    fn float_remainder_is_supported() {
+        // Cranelift has no float remainder instruction, so this goes through
+        // the runtime's `ts_fmod` — which is C's fmod, and matches
+        // JavaScript's `%` exactly.
+        compiles("print(5.0 % 2.0);");
+    }
+
+    #[test]
+    fn rejects_a_remainder_across_types() {
+        let err = type_error("let a: int = 1; print(1.5 % a);");
+        assert!(
+            err.contains("arithmetic operators require two numbers or two ints"),
+            "got: {err}"
+        );
     }
 
     #[test]

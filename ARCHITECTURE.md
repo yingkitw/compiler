@@ -130,7 +130,8 @@ main (C ABI, returns i32)
    └── __ts_start          top-level statements
          └── user main()   if declared
                └── tsfn_*  user functions
-                     └── ts_print_number / ts_print_bool   (imported from the C runtime)
+                     └── ts_print_number / ts_print_bool / ts_print_int
+                     └── ts_fmod             (imported from the C runtime)
 ```
 
 ### Type checking

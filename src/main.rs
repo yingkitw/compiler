@@ -95,6 +95,10 @@ fn run(input: &Path, output: Option<PathBuf>, compile_only: bool) -> Result<Path
     let status = std::process::Command::new("cc")
         .arg(&obj_path)
         .arg(&rt_path)
+        // The runtime uses libm's `fmod` for the float remainder. On macOS
+        // libm is part of libSystem and this flag is a no-op; on Linux it is
+        // needed to resolve the symbol.
+        .arg("-lm")
         .arg("-o")
         .arg(&out)
         .status()

@@ -182,6 +182,23 @@ fn deep_but_finite_recursion_still_works() {
 }
 
 #[test]
+fn remainder_matches_javascript() {
+    // `%` on doubles truncates toward zero and takes the sign of the
+    // dividend — JavaScript's rule, and C's `fmod`, which is what the
+    // runtime calls because Cranelift has no float remainder instruction.
+    assert_eq!(
+        compile_and_run("remainder"),
+        "1.5\n\
+         -1.5\n\
+         1.5\n\
+         2\n\
+         1\n\
+         1\n\
+         -1\n"
+    );
+}
+
+#[test]
 fn type_mismatch_rejected() {
     compile_fails("let x: number = true;", "cannot initialize 'x: number'");
 }

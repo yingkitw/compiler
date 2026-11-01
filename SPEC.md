@@ -105,7 +105,9 @@ Assignment is right-associative; all binary operators are left-associative.
 string literals, `new`, `typeof`, `instanceof`, `in`, `of`, `delete`, `void`
 operator, `as`, generics, classes, modules, arrow functions.
 
-The `%` (remainder) operator is supported for `int` operands only.
+The `%` (remainder) operator is supported for `int` and `number` operands. For
+`number` it truncates toward zero and takes the sign of the dividend, like
+JavaScript's `%`.
 
 ### Statements
 
@@ -156,8 +158,9 @@ The `%` (remainder) operator is supported for `int` operands only.
     are `int`.
   - There is **no implicit conversion** between `number` and `int`. Mixing them
     is an error.
-- `%` (remainder) requires two `int` operands and yields an `int`. There is no
-  float remainder.
+- `%` (remainder) requires two operands of the same numeric type and yields
+  that type. Integer `%` truncates toward zero; for `number` it truncates
+  toward zero and takes the sign of the dividend, like JavaScript's `%`.
 - Relational operators (`<`, `<=`, `>`, `>=`) require two `number`s or two
   `int`s, and yield `boolean`.
 - Equality (`==`, `!=`) requires both operands to have the *same* type
@@ -210,13 +213,14 @@ functions that don't return on all paths, nested function declarations,
 ## Runtime ABI
 
 The compiler emits a relocatable object file and links it with a small C
-translation unit containing four functions:
+translation unit containing five functions:
 
 ```c
 void ts_print_number(double x);
 void ts_print_bool(signed char x);
 void ts_print_int(long long x);
 void ts_runtime_init(void);
+double ts_fmod(double x, double y);
 ```
 
 `ts_runtime_init` is called first by the generated C `main`. It installs a
@@ -233,7 +237,9 @@ way a compiled program can fault is by running out of stack.
 
 These are imported by the generated code under `Linkage::Import`. `double` maps
 to Cranelift's `F64`, `signed char` to `I8`, and `long long` to `I64`, so the
-ABI matches exactly on every supported platform.
+ABI matches exactly on every supported platform. `ts_fmod` exists because
+Cranelift has no float remainder instruction; it is C's `fmod`, which
+truncates toward zero and takes the sign of the dividend — JavaScript's `%`.
 
 User-declared functions are exported as `tsfn_<name>`; the synthetic top-level
 function is `__ts_start`; the C entry point is `main`. All calls use the

@@ -47,7 +47,8 @@ pub enum BinOp {
     Sub,
     Mul,
     Div,
-    /// Remainder. Integer operands only — Cranelift has no float remainder.
+    /// Remainder. Integer operands use `srem`; float operands go through the
+    /// runtime's `ts_fmod`, because Cranelift has no float remainder.
     Rem,
     Eq,
     Ne,
