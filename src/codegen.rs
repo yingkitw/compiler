@@ -520,7 +520,9 @@ impl<'a> FnGen<'a> {
                     Err("cannot return a value from a void function".into())
                 }
                 (Some(e), rt) => {
-                    let (v, t) = self.gen_expr(e)?;
+                    // The return type is the context: an integer literal
+                    // becomes an int here.
+                    let (v, t) = self.gen_expr_as(e, Some(rt))?;
                     if t != rt {
                         return Err(format!("cannot return {} from a function returning {}", t, rt));
                     }
@@ -1067,6 +1069,16 @@ mod tests {
     #[test]
     fn accepts_an_int_parameter_and_argument() {
         compiles("function f(n: int): int { return n; } let x: int = f(3);");
+    }
+
+    #[test]
+    fn an_int_literal_adapts_to_the_return_type() {
+        // Regression test: `return 0;` in an int function used to be
+        // rejected, because the return statement did not pass the expected
+        // type to the expression.
+        compiles("function f(): int { return 0; }");
+        compiles("function f(): int { return 42; }");
+        compiles("function f(): int { if (true) { return 1; } return 0; }");
     }
 
     #[test]

@@ -202,8 +202,11 @@ illustration of what this project is doing differently: we do not emit
 JavaScript at all.
 
 **The `int` type.** `int` (64-bit) keeps arithmetic exact past 2^53 and is
-1.4x faster than `number` on arithmetic-heavy loops. It is not a
-cross-toolchain comparison — the JavaScript toolchains have no integer type.
+measurably faster where arithmetic is the work: **1.43x** on an arithmetic-only
+loop and **1.94x** when a function call happens per iteration. It is a wash on
+recursion (0.98x), which is the evidence that the gap to scriptc is not about
+arithmetic. It is not a cross-toolchain comparison — the JavaScript toolchains
+have no integer type.
 
 ## Testing
 

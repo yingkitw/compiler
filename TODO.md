@@ -14,6 +14,15 @@
       adopts the type of its context, and the lexer keeps a literal's *exact*
       integer value so `9007199254740993` (2^53 + 1) survives — a double would
       round it. No implicit conversion between `int` and `number`.
+- [x] **Measured what the `int` type is worth** (`scripts/bench_int.py`,
+      interleaved rounds, min-of-N): **1.43x** on arithmetic-only code, **1.94x**
+      on a function call per iteration, and **0.98x** — a wash — on recursion.
+      The recursion result is the interesting one: it says the scriptc gap is
+      not about arithmetic
+- [x] **`return` adapts a literal to the function's return type** — `return 0;`
+      in an `int` function used to be rejected, because the return statement did
+      not pass the expected type to the expression. Found while writing a
+      benchmark program, fixed, and covered by a regression test
 - [x] **Cranelift backend** — SSA variables, `if`/`else`, `while`, short-circuit
       `&&` / `||`, recursion, forward references, two-pass function collection
 - [x] **Native binary output** — Mach-O/ELF object via `cranelift-object`, linked
@@ -27,11 +36,12 @@
       tree, ARCHITECTURE.md mentions, TODO.md test counts, and README doc links
 
 ### Quality
-- [x] **79 inline unit tests + 17 integration tests** — all passing; `cargo clippy
-      --all-targets` exits 0; doc-sync enforced by `tests/docs_sync.rs`- [x] **Inline unit tests for the lexer, parser, and type rules** — 13 lexer tests
+- [x] **80 inline unit tests + 17 integration tests** — all passing; `cargo clippy
+      --all-targets` exits 0; doc-sync enforced by `tests/docs_sync.rs`
+- [x] **Inline unit tests for the lexer, parser, and type rules** — 13 lexer tests
       (token kinds, comments, line tracking, exact integer literals, lex errors),
       21 parser tests (precedence, associativity, statement forms, parse errors),
-      45 codegen tests (every type rule in `FnGen`, the `int` type, plus
+      46 codegen tests (every type rule in `FnGen`, the `int` type, plus
       acceptance cases for scoping, shadowing, recursion, and forward
       references)
 - [x] **Wiring guard** — a test that drives one program per AST variant and
@@ -64,16 +74,23 @@
 ## Next
 
 ### High priority
-- [ ] **Reduce call overhead — this, not arithmetic, is the scriptc gap.**
-      Measured: our tight loop already ties scriptc (101 ms vs 104 ms), but our
-      recursive fib is ~1.4x slower (48 ms vs 31 ms). Since the `int` type
-      changed nothing for recursion (0.92x), the difference must be in how
-      calls are compiled — argument passing, frame setup, register spilling.
-      Next step: dump and compare the emitted call sequences against scriptc's
-- [ ] **Measure the `int` win in the shared benchmark** — `scripts/bench_int.py`
-      does it in isolation; fold the conclusion into `bench/RESULTS.md` and the
-      README, and report both honestly: the apples-to-apples comparison against
-      scriptc still shows scriptc ahead on recursive code
+- [ ] **Stack-overflow detection** — deep recursion currently **segfaults**: a
+      30-million-deep chain exhausts the 8 MiB main-thread stack and the
+      process dies with SIGSEGV, taking the whole program with it. `scriptc`
+      checks the stack pointer against a limit on function entry and reports
+      a clean error (`_scr_stack_overflow` in its disassembly). Same approach
+      here: compare `sp` against a limit at function entry, and report
+      "maximum recursion depth exceeded" instead of crashing. This is a
+      correctness and robustness bug, not a performance one
+- [ ] **Close the recursion gap to scriptc — and profile before guessing.**
+      Our `fib` is ~1.7x slower than scriptc's (29 ms vs 50 ms compute).
+      Ruled out so far: instruction count (scriptc executes *more* — 28 vs our
+      18 per call), float-vs-integer arithmetic (our `int` version matches our
+      `number` version), and stack spills of the argument (our `int` codegen
+      keeps it in callee-saved `x19`, structurally the same as scriptc's).
+      Next step: sample the two binaries with a profiler (`sample` on macOS)
+      and compare where the cycles actually go, rather than reasoning from
+      the disassembly
 - [ ] **Strings** — add a `string` type (UTF-8 bytes + length, not a Rust
       `String`), string literals in the lexer, `+` concatenation, `print`
       support, comparison operators. Needs a GC or arena decision first — see
@@ -171,37 +188,38 @@ Recorded per AGENTS.md Step 7. Total is /30.
 |---|---|---|---|---|---|---|---|
 | 2026-11-01 | 4 | 4 | 3 | 4 | 4 | 5 | 24 |
 | 2026-11-01 (post-benchmark) | 5 | 4 | 4 | 5 | 4 | 5 | 27 |
+| 2026-11-01 (post-int) | 5 | 4 | 4 | 5 | 5 | 5 | 28 |
 
-**Evidence (2026-11-01, post-benchmark)**:
-- *Correctness 5/5*: `cargo test` green — 63 inline unit tests + 16 integration
+**Evidence (2026-11-01, post-int)**:
+- *Correctness 5/5*: `cargo test` green — 80 inline unit tests + 17 integration
   tests. Every language feature has a runnable example, and every number the
   runtime prints is verified byte-identical to JavaScript's `Number::toString`.
   The benchmark found and fixed a real precision bug (`%g` truncating to six
-  significant digits), and the harness now gates on all toolchains agreeing.
-  Coverage measurement is still the one gap.
+  significant digits) and a real type bug (`return 0;` rejected in an `int`
+  function). Coverage measurement is still the one gap.
 - *Codegen 4/5*: binaries produce reference outputs; PIC verified on macOS
-  arm64; unreachable-block handling verified. Now benchmarked against deno,
-  bun, and node: **2000x smaller artifacts, 2-3x faster startup, fastest
-  compile time, ~2.2x faster compute than deno on call-heavy code**, and
-  roughly tied with a JIT on tight loops. Not 5 — no cross-platform testing and
-  no UB/valgrind pass.
+  arm64. Benchmarked against deno, bun, scriptc, tsrust, tsc and our own
+  published build: **~2000x smaller artifacts than the engine-bundling
+  toolchains, ~2.5x faster startup, fastest compile time**, and within noise of
+  scriptc on tight loops. Not 5 — a ~1.7x recursion gap to scriptc remains
+  (profiling queued), and deep recursion segfaults instead of reporting an
+  error.
 - *Maintainability 4/5*: `codegen.rs` is still one large `FnGen` impl, but it
-  is now covered by 31 unit tests, so the risk of changing it is measured
-  rather than assumed. Clippy clean.
+  is covered by 45 unit tests, so the risk of changing it is measured rather
+  than assumed. Clippy clean.
 - *Docs 5/5*: README, SPEC, ARCHITECTURE, TODO, MEMORY, AGENTS, and
   `bench/RESULTS.md` all present, mutually linked, and doc-sync enforced by
   `cargo test`. The benchmark report is generated, not hand-written, so it
   cannot drift from reality.
-- *Wiring 4/5*: AST variants handled in both parser and codegen; CLI flags
-  documented; the benchmark exercises the real CLI end to end. Not 5 — still no
-  test that would catch a new AST variant missing a codegen arm.
+- *Wiring 5/5*: AST variants handled in both parser and codegen; a wiring
+  guard drives one program per AST variant and asserts the compiler never
+  panics; rejected programs always produce a diagnostic. CLI flags documented;
+  the benchmark exercises the real CLI end to end.
 - *Footprint 5/5*: five dependencies, all essential (Cranelift × 4 +
   target-lexicon); no speculative crates; the CLI avoids `clap` in favour of
   hand-rolled parsing; the shipped runtime is ~90 lines of C.
 
-**Next weakest area**: Wiring (4/5) — a new `Expr`/`Stmt` variant added
-without a codegen arm would compile fine and panic at runtime. The fix is a
-small test that walks the AST variants, plus widening the language. Since the
-benchmark's honest limitation is that it only covers numeric workloads, the
-highest-value *feature* item remains **strings** (see "Next"), which would
-also make the benchmark cover realistic programs.
+**Next weakest area**: Codegen (4/5) — two concrete items, both now queued with
+evidence: **stack-overflow detection** (deep recursion segfaults today) and
+**the recursion gap to scriptc** (ruled out instruction count, arithmetic and
+spills; needs profiling, not more guessing).

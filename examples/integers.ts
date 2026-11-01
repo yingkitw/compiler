@@ -30,3 +30,9 @@ function fib(n: int): int {
     return fib(n - 1) + fib(n - 2);
 }
 print(fib(35));  // 9227465
+
+// A literal adapts to the function's return type.
+function zero(): int {
+    return 0;
+}
+print(zero());   // 0
