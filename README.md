@@ -101,8 +101,9 @@ function main(): void {
 
 The checker is strict — there are no implicit conversions.
 
-- Arithmetic (`+ - * /`) and relational operators (`< <= > >=`) require
-  `number` operands.
+- Arithmetic (`+ - * / %`) and relational operators (`< <= > >=`) require both
+  operands to have the *same* numeric type — two `number`s or two `int`s.
+  There is no implicit conversion between them.
 - Equality (`== !=`) requires both operands to have the *same* type.
 - `&&`, `||`, and `!` accept `boolean` or `number` and always yield `boolean`.
   They **short-circuit**: in `false && (1 / 0 > 0)`, the right side is never
@@ -122,6 +123,7 @@ error: cannot initialize 'x: number' with a value of type boolean
 | Function | Behaviour |
 |---|---|
 | `print(number)` | Prints the value and a newline (`42`, `12.56636`) — formatted exactly like JavaScript's `Number.prototype.toString` |
+| `print(int)` | Prints the value and a newline (`9007199254740993` stays exact) |
 | `print(boolean)` | Prints `true` or `false` |
 
 ## How it works
@@ -157,9 +159,10 @@ Read [ARCHITECTURE.md](ARCHITECTURE.md) for the full design rationale, and
 ## Not supported yet
 
 Strings, arrays, objects, classes, closures, generics, modules, `for`/`switch`,
-`continue`/`break`, `++`/`--`, compound assignment, `%`, and integer types.
-`number` is always an IEEE-754 double, so integer arithmetic is exact only up to
-2^53.
+`continue`/`break`, `++`/`--`, and compound assignment.
+
+`number` is an IEEE-754 double, so it is exact only up to 2^53. Use the `int`
+type (64-bit) when the value has to be exact.
 
 This is a compiler for a *subset*, not a TypeScript implementation. It is meant
 as a readable reference for how a native code generator is put together — and as
