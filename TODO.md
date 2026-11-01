@@ -30,6 +30,11 @@
       exceeded" with exit status 1; output printed before the overflow is
       preserved (stdout is flushed first). The language has no pointers, so
       the only way a compiled program can fault is by running out of stack
+- [x] **Float remainder `%`** — `5.5 % 2.0` used to be rejected because
+      Cranelift has no `frem` instruction. The runtime now provides
+      `ts_fmod`, which is C's `fmod`: it truncates toward zero and takes the
+      sign of the dividend, exactly like JavaScript's `%` (verified against
+      Node). Integer `%` is unchanged — it is still a single `srem`
 - [x] **Cranelift backend** — SSA variables, `if`/`else`, `while`, short-circuit
       `&&` / `||`, recursion, forward references, two-pass function collection
 - [x] **Native binary output** — Mach-O/ELF object via `cranelift-object`, linked
@@ -117,11 +122,6 @@
 - [ ] **Arrays** — `number[]` and `boolean[]` with bounds-checked indexing, `push`,
       `length`. Same allocation strategy decision as strings
 - [ ] **`for` loops** — `for (let i = 0; i < n; i = i + 1)` and `for (const x of arr)`
-- [x] **Float remainder `%`** — `5.5 % 2.0` used to be rejected because
-      Cranelift has no `frem` instruction. The runtime now provides
-      `ts_fmod`, which is C's `fmod`: it truncates toward zero and takes the
-      sign of the dividend, exactly like JavaScript's `%` (verified against
-      Node). Integer `%` is unchanged — it is still a single `srem`
 - [ ] **Explicit `int`/`number` conversion** — `x as int` would let a program
       narrow deliberately instead of relying on literal adaptation
 
