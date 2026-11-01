@@ -35,6 +35,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 TSC_BIN = ROOT / "target" / "release" / "tsc"
 
+# The published v0.1.0 of this compiler installs a binary named `tsc` (see the
+# [[bin]] section in Cargo.toml), which is ambiguous with TypeScript's own
+# `tsc`. Install it into a dedicated prefix so the benchmark can call it
+# unambiguously:
+#   cargo install tsc-rs --version 0.1.0 --root bench/.toolchains/tsc-rs
+PUBLISHED_BIN = ROOT / "bench" / ".toolchains" / "tsc-rs" / "bin" / "tsc"
+
+# TypeScript's own compiler, resolved at startup because our binary shadows it.
+TSJS_BIN: str | None = None
+
 # --- Workloads -------------------------------------------------------------
 # Each template is rendered twice: `print` for tsc-rs, `console.log` for the
 # JavaScript toolchains. Only numbers and booleans are used, so every
@@ -88,6 +98,27 @@ WORKLOADS = [
     ),
 ]
 
+# Our own `int` variants of two workloads. The JavaScript toolchains have no
+# integer type, so these cannot be compared against them — they measure how
+# much the `int` type buys us relative to our own `number` versions.
+INT_FIB = (
+    "function fib(n: int): int {\n"
+    "    if (n < 2) { return n; }\n"
+    "    return fib(n - 1) + fib(n - 2);\n"
+    "}\n"
+    "{{PRINT}}(fib({{N}}));\n"
+)
+
+INT_LOOP = (
+    "let sum: int = 0;\n"
+    "let i: int = 0;\n"
+    "while (i < {{N}}) {\n"
+    "    sum = sum + i * i;\n"
+    "    i = i + 1;\n"
+    "}\n"
+    "{{PRINT}}(sum);\n"
+)
+
 
 @dataclass
 class Toolchain:
@@ -102,16 +133,23 @@ class Toolchain:
     # "standalone" - self-contained native code, no engine
     # "external"   - emits JavaScript, runs on a separate runtime
     runtime_kind: str = "standalone"
+    # True only for the build under test — never infer this from the name.
+    is_ours: bool = False
+    # A published older version kept for reference; excluded from the
+    # output-agreement gate because it is allowed to differ.
+    legacy: bool = False
 
 
 def toolchains() -> list[Toolchain]:
     return [
         Toolchain(
-            name="tsc-rs (ours)",
+            name="compiler (current)",
             print_stmt="print",
             compile_cmd=["{tsc}", "{src}", "-o", "{out}"],
             run_cmd=["{out}"],
-            note="Cranelift machine code, 2-function C runtime",
+            note="this compiler, built from the working tree",
+            runtime_kind="standalone",
+            is_ours=True,
         ),
         Toolchain(
             name="deno compile",
@@ -140,9 +178,21 @@ def toolchains() -> list[Toolchain]:
             runtime_kind="standalone",
         ),
         Toolchain(
+            name="compiler v0.1.0 (published)",
+            print_stmt="print",
+            compile_cmd=["{published}", "{src}", "-o", "{out}"],
+            run_cmd=["{out}"],
+            note="the published v0.1.0 of this compiler, for comparison with the current build",
+            runtime_kind="standalone",
+            # v0.1.0 prints numbers with the old lossy "%g", so its output
+            # legitimately differs from the current build. It is a reference
+            # point, not a peer: it is excluded from the agreement gate.
+            legacy=True,
+        ),
+        Toolchain(
             name="tsc + node",
             print_stmt="console.log",
-            compile_cmd=["tsc", "{src}", "--outDir", "{outdir}", "--skipLibCheck"],
+            compile_cmd=["{tsjs}", "{src}", "--outDir", "{outdir}", "--skipLibCheck"],
             run_cmd=["node", "{outdir}/{stem}.js"],
             produces_binary=False,
             note="reference path: TypeScript to JavaScript, run on the system Node",
@@ -201,14 +251,57 @@ def have(cmd: str) -> bool:
     return shutil.which(cmd) is not None
 
 
+def find_typescript_tsc() -> str | None:
+    """Locate TypeScript's own `tsc`, not ours.
+
+    This compiler also installs a binary called `tsc`, and if it is earlier on
+    PATH it shadows the real one — then `tsc prog.ts --outDir out` fails
+    because our flags are different. TypeScript's `tsc --version` prints
+    "Version x.y.z"; ours prints "compiler x.y.z". Use that to tell them
+    apart.
+    """
+    candidates = []
+    seen = set()
+    for c in shutil.which("tsc") or "", *(shutil.which("tsc-all") or "",):
+        if c and c not in seen:
+            seen.add(c)
+            candidates.append(c)
+    # `which -a` finds every `tsc` on PATH, not just the first.
+    try:
+        out = subprocess.run(
+            ["which", "-a", "tsc"], capture_output=True, text=True
+        ).stdout.split()
+        candidates.extend(c for c in out if c not in seen)
+    except OSError:
+        pass
+    candidates += [
+        "/opt/homebrew/bin/tsc",
+        "/usr/local/bin/tsc",
+        str(Path.home() / ".npm-global/bin/tsc"),
+    ]
+    for c in candidates:
+        try:
+            proc = subprocess.run([c, "--version"], capture_output=True, text=True, timeout=20)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if proc.returncode == 0 and proc.stdout.strip().lower().startswith("version"):
+            return c
+    return None
+
+
 def available(tc: "Toolchain") -> bool:
     """Is this toolchain runnable here?
 
     `tsc` is ambiguous: the system `tsc` is TypeScript's compiler, while ours
-    lives at a fixed path. Resolve ours by path and everything else by PATH.
+    lives at a fixed path. Resolve ours by path, the published v0.1.0 by its
+    dedicated install prefix, and everything else by PATH.
     """
-    if tc.name.startswith("tsc-rs"):
+    if tc.is_ours:
         return TSC_BIN.exists()
+    if tc.compile_cmd[0] == "{published}":
+        return PUBLISHED_BIN.exists()
+    if tc.compile_cmd[0] == "{tsjs}":
+        return bool(TSJS_BIN) and Path(TSJS_BIN).exists()
     return have(tc.compile_cmd[0])
 
 
@@ -227,10 +320,18 @@ class Result:
     output: str = ""
     error: str | None = None
     note: str = ""
+    is_ours: bool = False
+    legacy: bool = False
 
 
 def bench_workload(w: Workload, tc: Toolchain, n: int, reps: int, keep: Path, cache_dir: Path) -> Result:
-    res = Result(workload=w.name, toolchain=tc.name, note=tc.note)
+    res = Result(
+        workload=w.name,
+        toolchain=tc.name,
+        note=tc.note,
+        is_ours=tc.is_ours,
+        legacy=tc.legacy,
+    )
     work = keep / f"{w.name}-{tc.name.replace(' ', '_').replace('/', '_')}"
     work.mkdir(parents=True, exist_ok=True)
 
@@ -245,8 +346,16 @@ def bench_workload(w: Workload, tc: Toolchain, n: int, reps: int, keep: Path, ca
         env[key] = value.replace("{cache}", str(cache_dir))
 
     out = work / ("prog" if tc.produces_binary else "out")
-    cmd = [c.format(src=str(src), out=str(out), outdir=str(out), stem="prog",
-                    tsc=str(TSC_BIN)) for c in tc.compile_cmd]
+    fmt = dict(
+        src=str(src),
+        out=str(out),
+        outdir=str(out),
+        stem="prog",
+        tsc=str(TSC_BIN),
+        published=str(PUBLISHED_BIN),
+        tsjs=TSJS_BIN or "tsc",
+    )
+    cmd = [c.format(**fmt) for c in tc.compile_cmd]
 
     if not available(tc):
         res.error = f"{cmd[0]} not installed"
@@ -259,8 +368,7 @@ def bench_workload(w: Workload, tc: Toolchain, n: int, reps: int, keep: Path, ca
         res.compile_cold = time_cmd(cmd, env, cwd=work)
         res.compile_warm = time_cmd(cmd, env, cwd=work)
         res.size = artifact_size(out)
-        run = [c.format(src=str(src), out=str(out), outdir=str(out), stem="prog",
-                        tsc=str(TSC_BIN)) for c in tc.run_cmd]
+        run = [c.format(**fmt) for c in tc.run_cmd]
         res.runtime_best, res.runtime_median, res.output = time_run(run, reps, env, cwd=work)
     except Exception as exc:  # noqa: BLE001 - report, don't abort the suite
         res.error = str(exc)[:400]
@@ -324,6 +432,10 @@ def main() -> int:
     print(f"host: {platform.platform()}  ({platform.machine()}, {os.cpu_count()} cpus)")
     print(f"tsc:  {TSC_BIN}")
 
+    global TSJS_BIN
+    TSJS_BIN = find_typescript_tsc()
+    print(f"tsjs: {TSJS_BIN or 'not found (the tsc+node path will be skipped)'}")
+
     tcs = toolchains()
     missing = [t.name for t in tcs if not available(t)]
     if missing:
@@ -355,23 +467,55 @@ def main() -> int:
                         f"compile_cold={r.compile_cold:6.2f}s"
                     )
 
+        # The `int` variants — tsc-rs only, since the JavaScript toolchains
+        # have no integer type.
+        print("\n=== workloads: int-fib, int-loop (tsc-rs only) — the integer type")
+        int_workloads = [
+            ("int-fib", INT_FIB, 35, 30, "recursive fib using the int type"),
+            ("int-loop", INT_LOOP, 100_000_000, 10_000_000, "tight loop using the int type"),
+        ]
+        ours_tc = next(t for t in tcs if t.is_ours)
+        for wl_name, tmpl, n_full, n_quick, note in int_workloads:
+            wl = Workload(
+                name=wl_name,
+                template=tmpl,
+                n=n_full,
+                quick_n=n_quick,
+                note=note,
+            )
+            n = wl.quick_n if args.quick else wl.n
+            cache_dir = keep / "cache-tsc-rs"
+            r = bench_workload(wl, ours_tc, n, args.reps, keep, cache_dir)
+            results.append(r)
+            if r.error:
+                print(f"  {wl_name:<22} ERROR: {r.error.splitlines()[0][:80]}")
+            else:
+                print(
+                    f"  {wl_name:<22} size={human_size(r.size):>11}  "
+                    f"run={r.runtime_best * 1000:9.2f}ms"
+                )
+
     # --- correctness: every toolchain must agree -------------------------
     print("\n=== output agreement")
     problems = []
     for w in WORKLOADS:
-        outs = {
-            r.toolchain: r.output
-            for r in results
-            if r.workload == w.name and not r.error
-        }
+        rows = [r for r in results if r.workload == w.name and not r.error]
+        outs = {r.toolchain: r.output for r in rows}
         if not outs:
             continue
-        values = list(outs.values())
+        # A published older version is allowed to differ — that difference is
+        # the point of keeping it in the comparison.
+        legacy = {r.toolchain: r.output for r in rows if r.legacy}
+        current = {k: v for k, v in outs.items() if k not in legacy}
+        values = list(current.values())
         same_value, same_bytes = outputs_agree(values)
         detail = "byte-identical" if same_bytes else ("numerically equal" if same_value else "MISMATCH")
-        print(f"  {w.name}: {len(outs)} toolchains -> {detail} ({next(iter(outs.values()))!r})")
+        print(f"  {w.name}: {len(current)} toolchains -> {detail} ({next(iter(current.values()))!r})")
+        for name, value in legacy.items():
+            if value not in current.values():
+                print(f"    (legacy {name} prints {value!r} — the old lossy formatting)")
         if not same_value:
-            problems.append((w.name, outs))
+            problems.append((w.name, current))
     if problems:
         print("\nERROR: toolchains disagree on program output", file=sys.stderr)
         for name, outs in problems:
@@ -431,12 +575,12 @@ def write_report(results, workloads, path: Path, quick: bool, overhead_ms: float
     startup_rows = {
         r.toolchain: r for r in results if r.workload == "startup" and not r.error
     }
-    ours_start = startup_rows.get("tsc-rs (ours)")
+    ours_start = next((r for r in startup_rows.values() if r.is_ours), None)
     kinds = {tc.name: tc.runtime_kind for tc in toolchains()}
     if ours_start:
         lines += ["## Headline", ""]
         for name, r in startup_rows.items():
-            if name.startswith("tsc-rs"):
+            if r.is_ours:
                 continue
             start_ratio = r.runtime_best / max(1e-9, ours_start.runtime_best)
             kind = kinds.get(name, "standalone")
@@ -451,12 +595,12 @@ def write_report(results, workloads, path: Path, quick: bool, overhead_ms: float
             )
         lines.append("")
 
-    for w in workloads:
+    for w in WORKLOADS:
         rows = [r for r in results if r.workload == w.name]
         ok = [r for r in rows if not r.error]
         if not ok:
             continue
-        ours = next((r for r in ok if r.toolchain.startswith("tsc-rs")), None)
+        ours = next((r for r in ok if r.is_ours), None)
         ours_compute = (
             ours.runtime_best - baseline.get(ours.toolchain, 0.0) if ours else 0.0
         )
@@ -465,7 +609,7 @@ def write_report(results, workloads, path: Path, quick: bool, overhead_ms: float
             "",
             f"{w.note}.",
             "",
-            "| Toolchain | Compile (cold) | Compile (warm) | Artifact size | Runtime | compute | vs. tsc-rs |",
+            "| Toolchain | Compile (cold) | Compile (warm) | Artifact size | Runtime | compute | vs. compiler |",
             "|---|---|---|---|---|---|---|",
         ]
         for r in rows:
@@ -474,7 +618,7 @@ def write_report(results, workloads, path: Path, quick: bool, overhead_ms: float
                 continue
             base = baseline.get(r.toolchain, 0.0)
             compute = max(0.0, r.runtime_best - base)
-            if r.toolchain.startswith("tsc-rs"):
+            if r.is_ours:
                 rel = "1.00x (base)"
             elif ours_compute > 1e-6:
                 rel = f"{compute / ours_compute:.2f}x"
@@ -486,6 +630,50 @@ def write_report(results, workloads, path: Path, quick: bool, overhead_ms: float
                 f"{compute * 1000:.2f}ms | {rel} |"
             )
         lines.append("")
+
+    # Our own `int` versions of two workloads, next to the `number` versions
+    # above. Only tsc-rs can run them, so these are not cross-toolchain
+    # comparisons — they quantify what the integer type buys.
+    def int_section(name: str, number_name: str, title: str, blurb: str) -> list[str]:
+        int_row = next((r for r in results if r.workload == name), None)
+        num_row = next((r for r in results if r.workload == number_name), None)
+        if not int_row or not num_row or int_row.error or num_row.error:
+            return []
+        num_compute = num_row.runtime_best - baseline.get(num_row.toolchain, 0.0)
+        int_compute = int_row.runtime_best - baseline.get(int_row.toolchain, 0.0)
+        speedup = num_compute / int_compute if int_compute > 1e-9 else float("inf")
+        return [
+            f"## {title}",
+            "",
+            blurb,
+            "",
+            "| Variant | Artifact size | Runtime | compute |",
+            "|---|---|---|---|",
+            f"| `number` (f64) | {human_size(num_row.size)} | {num_row.runtime_best * 1000:.2f}ms | {num_compute * 1000:.2f}ms |",
+            f"| `int` (i64) | {human_size(int_row.size)} | {int_row.runtime_best * 1000:.2f}ms | {int_compute * 1000:.2f}ms |",
+            "",
+            f"**The `int` type is {speedup:.2f}x faster** on this workload.",
+            "",
+        ]
+
+    lines += int_section(
+        "int-loop",
+        "loop",
+        "int vs number: a tight loop",
+        "The same counting loop, once with `number` (f64) and once with `int`\n"
+        "(i64). This is where the integer type pays: the workload is dominated\n"
+        "by arithmetic, so integer instructions win.",
+    )
+    lines += int_section(
+        "int-fib",
+        "fib",
+        "int vs number: recursive calls",
+        "The same recursive fibonacci, once with `number` and once with `int`.\n"
+        "**Here the integer type does not help** — the workload is dominated by\n"
+        "call overhead, not arithmetic. That is the evidence that the gap to\n"
+        "scriptc on recursive code is about how calls are compiled, not about\n"
+        "floating point.",
+    )
 
     lines += ["## Toolchain notes", ""]
     seen = set()

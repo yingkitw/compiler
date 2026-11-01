@@ -91,6 +91,10 @@ void ts_print_bool(signed char x) { puts(x ? "true" : "false"); }
 void ts_print_int(long long x) { printf("%lld\n", x); }
 "#;
 
+/// A generated value and its static type. `None` means the expression has no
+/// value (`void`).
+type TypedValue = (Option<Value>, Type);
+
 /// The type a literal should adopt given the other operand's type. Only
 /// `int` is contagious: a `number` literal in an `int` context stays a
 /// `number`, because widening is not implicit.
@@ -696,18 +700,34 @@ impl<'a> FnGen<'a> {
         &mut self,
         lhs: &Expr,
         rhs: &Expr,
-    ) -> Result<((Option<Value>, Type), (Option<Value>, Type)), String> {
+    ) -> Result<(TypedValue, TypedValue), String> {
         let literal = |e: &Expr| matches!(e, Expr::Num(_));
         if literal(lhs) && !literal(rhs) {
             let (rv, rt) = self.gen_expr(rhs)?;
-            let (lv, lt) = self.gen_expr_as(lhs, int_hint(rt))?;
+            let (lv, lt) = self.gen_lit_or_expr(lhs, int_hint(rt))?;
             Ok(((lv, lt), (rv, rt)))
         } else {
             let (lv, lt) = self.gen_expr(lhs)?;
-            let (rv, rt) = self.gen_expr_as(rhs, int_hint(lt))?;
+            let (rv, rt) = self.gen_lit_or_expr(rhs, int_hint(lt))?;
             Ok(((lv, lt), (rv, rt)))
         }
     }
+
+    /// Generate a literal, adapting it to the expected type when it can.
+    ///
+    /// If a literal cannot take the expected type — `4.5` where an `int` is
+    /// wanted — it is generated as a plain `number` instead, so the caller
+    /// reports the real problem ("these two types do not match") rather than
+    /// a conversion failure the programmer did not ask for.
+    fn gen_lit_or_expr(
+        &mut self,
+        e: &Expr,
+        expected: Option<Type>,
+    ) -> Result<(Option<Value>, Type), String> {
+        if matches!(e, Expr::Num(_)) && let Ok(v) = self.gen_expr_as(e, expected) {
+            return Ok(v);
+        }
+        self.gen_expr(e)    }
 
     /// Generate an expression, optionally with the type its context expects.
     /// Only integer literals are affected: in an `int` context they become
@@ -1021,7 +1041,10 @@ mod tests {
     #[test]
     fn rejects_mixing_int_and_number() {
         let err = type_error("let a: int = 1; let b = a + 1.5;");
-        assert!(err.contains("no implicit conversion"), "got: {err}");
+        assert!(
+            err.contains("arithmetic operators require two numbers or two ints"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -1056,13 +1079,19 @@ mod tests {
     #[test]
     fn rejects_arithmetic_on_booleans() {
         let err = type_error("let x = 1 + true;");
-        assert!(err.contains("arithmetic operators require numbers"), "got: {err}");
+        assert!(
+            err.contains("arithmetic operators require two numbers or two ints"),
+            "got: {err}"
+        );
     }
 
     #[test]
     fn rejects_relational_operators_on_booleans() {
         let err = type_error("let x = true < false;");
-        assert!(err.contains("relational operators require numbers"), "got: {err}");
+        assert!(
+            err.contains("relational operators require two numbers or two ints"),
+            "got: {err}"
+        );
     }
 
     #[test]

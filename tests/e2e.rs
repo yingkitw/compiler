@@ -96,6 +96,26 @@ fn number_formatting_matches_javascript() {
 }
 
 #[test]
+fn integers_are_exact() {
+    // The `int` type keeps the exact value of a literal: 2^53 + 1 is not
+    // representable as an f64, so a compiler that parsed literals as doubles
+    // would silently print a different number.
+    assert_eq!(
+        compile_and_run("integers"),
+        "52\n\
+         32\n\
+         420\n\
+         4\n\
+         2\n\
+         false\n\
+         true\n\
+         43\n\
+         9007199254740993\n\
+         9227465\n"
+    );
+}
+
+#[test]
 fn type_mismatch_rejected() {
     compile_fails("let x: number = true;", "cannot initialize 'x: number'");
 }
@@ -120,7 +140,10 @@ fn missing_return_rejected() {
 
 #[test]
 fn bad_arithmetic_rejected() {
-    compile_fails("let x = 1 + true;", "arithmetic operators require numbers");
+    compile_fails(
+        "let x = 1 + true;",
+        "arithmetic operators require two numbers or two ints",
+    );
 }
 
 #[test]

@@ -6,8 +6,14 @@
 - [x] **Lexer** — tokens, line tracking, `//` and `/* */` comments, numeric literals
 - [x] **Parser** — recursive descent, full operator precedence, `let`/`const`,
       functions, `if`/`else`, `while`, `return`, blocks, type annotations
-- [x] **Type system** — `number` / `boolean` / `void`, fused type checking in codegen,
-      diagnostics for mismatches, const reassignment, undefined names, missing returns
+- [x] **Type system** — `number` / `int` / `boolean` / `void`, fused type checking
+      in codegen, diagnostics for mismatches, const reassignment, undefined names,
+      missing returns
+- [x] **`int` type (i64)** — exact integer arithmetic, integer division that
+      truncates toward zero, `%` for integers, integer comparisons. A literal
+      adopts the type of its context, and the lexer keeps a literal's *exact*
+      integer value so `9007199254740993` (2^53 + 1) survives — a double would
+      round it. No implicit conversion between `int` and `number`.
 - [x] **Cranelift backend** — SSA variables, `if`/`else`, `while`, short-circuit
       `&&` / `||`, recursion, forward references, two-pass function collection
 - [x] **Native binary output** — Mach-O/ELF object via `cranelift-object`, linked
@@ -21,13 +27,16 @@
       tree, ARCHITECTURE.md mentions, TODO.md test counts, and README doc links
 
 ### Quality
-- [x] **63 inline unit tests + 16 integration tests** — all passing; `cargo clippy
-      --all-targets` exits 0; doc-sync enforced by `tests/docs_sync.rs`
-- [x] **Inline unit tests for the lexer, parser, and type rules** — 11 lexer tests
-      (token kinds, comments, line tracking, lex errors), 21 parser tests
-      (precedence, associativity, statement forms, parse errors), 31 codegen
-      tests (every type rule in `FnGen`, plus acceptance cases for scoping,
-      shadowing, recursion, and forward references)
+- [x] **79 inline unit tests + 17 integration tests** — all passing; `cargo clippy
+      --all-targets` exits 0; doc-sync enforced by `tests/docs_sync.rs`- [x] **Inline unit tests for the lexer, parser, and type rules** — 13 lexer tests
+      (token kinds, comments, line tracking, exact integer literals, lex errors),
+      21 parser tests (precedence, associativity, statement forms, parse errors),
+      45 codegen tests (every type rule in `FnGen`, the `int` type, plus
+      acceptance cases for scoping, shadowing, recursion, and forward
+      references)
+- [x] **Wiring guard** — a test that drives one program per AST variant and
+      asserts the compiler never panics, plus a test that rejected programs
+      always produce a diagnostic and never a successful compile
 - [x] **Competitive benchmark** — `scripts/bench.py` compares the same programs
       compiled by tsc-rs, `deno compile`, `bun build --compile`, and `tsc + node`;
       output agreement is a gate, and `bench/RESULTS.md` is committed with each
@@ -55,13 +64,16 @@
 ## Next
 
 ### High priority
-- [ ] **Integer type (`int` = i64)** — the top performance item. Right now every
-      value is `f64`, so `n < 2` is a float compare and `n - 1` is float
-      arithmetic. `scriptc` compiles the same `fib` to integer instructions and
-      is **1.6x faster on compute** (27 ms vs our 43 ms for fib(35)). Target:
-      close that gap. Needs: a distinct `Type::Int`, i64 codegen, an integer
-      literal rule, mixed-type promotion rules, and `%` (which needs an
-      integer remainder — Cranelift has no float remainder instruction)
+- [ ] **Reduce call overhead — this, not arithmetic, is the scriptc gap.**
+      Measured: our tight loop already ties scriptc (101 ms vs 104 ms), but our
+      recursive fib is ~1.4x slower (48 ms vs 31 ms). Since the `int` type
+      changed nothing for recursion (0.92x), the difference must be in how
+      calls are compiled — argument passing, frame setup, register spilling.
+      Next step: dump and compare the emitted call sequences against scriptc's
+- [ ] **Measure the `int` win in the shared benchmark** — `scripts/bench_int.py`
+      does it in isolation; fold the conclusion into `bench/RESULTS.md` and the
+      README, and report both honestly: the apples-to-apples comparison against
+      scriptc still shows scriptc ahead on recursive code
 - [ ] **Strings** — add a `string` type (UTF-8 bytes + length, not a Rust
       `String`), string literals in the lexer, `+` concatenation, `print`
       support, comparison operators. Needs a GC or arena decision first — see
@@ -69,11 +81,18 @@
 - [ ] **Arrays** — `number[]` and `boolean[]` with bounds-checked indexing, `push`,
       `length`. Same allocation strategy decision as strings
 - [ ] **`for` loops** — `for (let i = 0; i < n; i = i + 1)` and `for (const x of arr)`
-- [ ] **`%` (modulo)** — float remainder; Cranelift has no `frem` instruction, so
-      this needs a runtime helper (`fmod`) rather than a single instruction.
-      An integer remainder is easier and comes with the `int` type above
+- [ ] **Float remainder `%`** — Cranelift has no `frem` instruction, so `5.5 % 2.0`
+      needs a runtime helper (`fmod`). Integer `%` already works
+- [ ] **Explicit `int`/`number` conversion** — `x as int` would let a program
+      narrow deliberately instead of relying on literal adaptation
 
 ### Medium priority
+- [ ] **Decide the binary name** — `cargo install compiler` currently installs a
+      command called `tsc`, the same name as TypeScript's official compiler, and
+      ours shadows it when earlier on `PATH`. Options: keep `tsc` as the primary
+      name and also install a second, unambiguous name (`tscc`); or rename
+      outright. `--version` now answers sanely, which removes the worst of the
+      clash, but the shadowing itself remains
 - [ ] **`++` / `--` operators** — prefix and postfix forms
 - [ ] **Compound assignment** — `+=`, `-=`, `*=`, `/=`
 - [ ] **Logical assignment** — `&&=`, `||=`

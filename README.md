@@ -166,13 +166,13 @@ The same program, compiled by every toolchain that can turn TypeScript into
 something runnable. Every toolchain must print the same result — the harness
 fails if they disagree.
 
-| | tsc-rs (ours) | scriptc | deno compile | bun --compile | tsc + node |
-|---|---|---|---|---|---|
-| **Artifact size** | **33 KiB** | 90 KiB | 65 MiB | 60 MiB | 119 B JS + system Node |
-| **Startup** | 8.0 ms | 7.4 ms | 16.1 ms | 18.4 ms | 135 ms |
-| **Compile time** | **0.12 s** | 0.47 s | 1.33 s | 0.74 s | 0.39 s |
-| **fib(35) compute** | 43 ms | **27 ms** | 95 ms | 52 ms | 113 ms |
-| **loop(1e8) compute** | **101 ms** | 105 ms | 100 ms | 104 ms | 108 ms |
+| | compiler | scriptc | compiler v0.1.0 | deno compile | bun --compile | tsc + node |
+|---|---|---|---|---|---|---|
+| **Artifact size** | **33 KiB** | 90 KiB | 33 KiB | 65 MiB | 60 MiB | 119 B JS + system Node |
+| **Startup** | **6.2 ms** | 6.7 ms | 7.3 ms | 17.0 ms | 18.3 ms | 126 ms |
+| **Compile time** | **0.11 s** | 0.66 s | 0.11 s | 20 s (once) | 0.70 s | 0.29 s |
+| **fib(35) compute** | 45 ms | **25 ms** | 44 ms | 93 ms | 52 ms | 92 ms |
+| **loop(1e8) compute** | **98 ms** | 97 ms | 97 ms | 98 ms | 98 ms | 110 ms |
 
 Full numbers, methodology, and the raw report: [`bench/RESULTS.md`](bench/RESULTS.md).
 Regenerate with `python3 scripts/bench.py`.
@@ -180,20 +180,24 @@ Regenerate with `python3 scripts/bench.py`.
 **Where we win.** `deno compile` and `bun build --compile` embed a JavaScript
 engine (V8 / JavaScriptCore) in the binary. We compile to machine code, so
 there is no engine to ship and nothing to initialise at startup — a 33 KiB
-binary instead of 60 MiB, ~2000x smaller, and 2-3x faster to start. We also
-compile ~3-10x faster than the engine-bundling toolchains.
+binary instead of 60 MiB, ~2000x smaller, and ~3x faster to start. We also
+compile ~6x faster than `deno` and ~2x faster than `scriptc`.
 
 **Where we lose.** The honest comparison is [`scriptc`](https://scriptc.dev)
-(Vercel Labs), the only other engine-free native TypeScript compiler: it
-beats us on call-heavy code (fib: 27 ms vs our 43 ms) and edges us on
-startup. We beat it on binary size (33 KiB vs 90 KiB) and compile time
-(0.12 s vs 0.47 s). The likely cause of the fib gap is that we have only
-`f64` — scriptc uses integers there, and integer compares and adds are
-cheaper than float ones. Adding an `int` type is the top of the backlog.
+(Vercel Labs), the only other engine-free native TypeScript compiler: it beats
+us on call-heavy code (fib: 25 ms vs our 45 ms). The evidence says **this is
+call overhead, not arithmetic** — our tight loop already ties scriptc, and
+switching that loop to 64-bit integers makes it 1.43x faster, while the same
+change does nothing for recursive calls (0.89x). Closing the gap means
+compiling calls better, not computing numbers better.
 
 **Where nobody wins.** On a tight numeric counting loop, V8 and
 JavaScriptCore are excellent at that shape, and Cranelift's optimiser does
 not beat a mature JIT — we are within noise of all of them (~1.0x).
+
+**The `int` type.** `int` (64-bit) keeps arithmetic exact past 2^53 and is
+1.43x faster than `number` on arithmetic-heavy loops. It is not a
+cross-toolchain comparison — the JavaScript toolchains have no integer type.
 
 ## Testing
 

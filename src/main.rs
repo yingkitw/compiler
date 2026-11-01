@@ -26,10 +26,15 @@ fn main() -> ExitCode {
                 output = Some(PathBuf::from(path));
             }
             "-c" | "--compile-only" => compile_only = true,
+            "-V" | "--version" => {
+                println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+                return ExitCode::SUCCESS;
+            }
             "-h" | "--help" => {
                 println!("usage: tsc <input.ts> [-o <output>] [-c]");
                 println!("  -o <path>   output path (default: input file name without extension)");
                 println!("  -c          emit an object file only, do not link");
+                println!("  -V          print the version and exit");
                 return ExitCode::SUCCESS;
             }
             _ if arg.starts_with('-') => {
