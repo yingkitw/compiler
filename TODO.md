@@ -43,9 +43,18 @@
       `integers.ts`, `stack_overflow.ts`
 - [x] **Doc-sync enforcement** — `tests/docs_sync.rs` checks the AGENTS.md module
       tree, ARCHITECTURE.md mentions, TODO.md test counts, and README doc links
+- [x] **Profiled the recursion gap to scriptc — it is algorithmic, not codegen**
+      — `sample` on both binaries plus an exact count of function entries
+      (instrument the function, count the printed lines) shows scriptc rewrites
+      a self-recursive call into a double loop around one recursive call, which
+      cuts the entry count by 5.24x. Our per-entry cost (~5 cycles, ~21
+      instructions) is the better of the two; the gap is the *number* of
+      entries. `scripts/bench_calls.py` was rewritten to measure entries and
+      ns/entry separately — the old version assumed `2**depth` calls, which is
+      wrong (it is `2*F(d+1)-1`), and duly reported 0.04 ns/call
 
 ### Quality
-- [x] **81 inline unit tests + 19 integration tests** — all passing; `cargo clippy
+- [x] **82 inline unit tests + 20 integration tests** — all passing; `cargo clippy
       --all-targets` exits 0; doc-sync enforced by `tests/docs_sync.rs`
 - [x] **Inline unit tests for the lexer, parser, and type rules** — 12 lexer tests
       (token kinds, comments, line tracking, exact integer literals, lex errors),
@@ -83,15 +92,24 @@
 ## Next
 
 ### High priority
-- [ ] **Close the recursion gap to scriptc — and profile before guessing.**
-      Our `fib` is ~1.7x slower than scriptc's (29 ms vs 50 ms compute).
-      Ruled out so far: instruction count (scriptc executes *more* — 28 vs our
-      18 per call), float-vs-integer arithmetic (our `int` version matches our
-      `number` version), and stack spills of the argument (our `int` codegen
-      keeps it in callee-saved `x19`, structurally the same as scriptc's).
-      Next step: sample the two binaries with a profiler (`sample` on macOS)
-      and compare where the cycles actually go, rather than reasoning from
-      the disassembly
+- [ ] **A recursion-rewriting pass — the measured reason we lose to
+      scriptc on recursive code.** Profiling (2026-11-02: `sample` on both
+      binaries plus an exact entry count) showed the gap is *algorithmic*,
+      not a codegen problem: on `fib(44)` we make **2,269,806,339** function
+      entries at **1.47 ns** each, scriptc makes **433,494,437** entries at
+      **3.8 ns** each. scriptc's compiler rewrites the recursion into a
+      double loop around one recursive call — the transformed tree for
+      `fib(6)` is 5 entries where the source recursion has 25 — which cuts
+      the entry count by a constant **5.24x** (F(n-1) against 2·F(n+1)-1).
+      Its own entries are ~2.4x more expensive than ours (it saves 12
+      registers and checks the stack limit per call), so the net is ~2x.
+      Scope to decide before starting: the transform only pays off for
+      *self-recursive* functions whose argument decreases by a constant, and
+      it trades code size for entries. A first version could target only the
+      case the benchmark exercises — a function that calls itself with
+      `param - k`, where `param` is an `int`.
+      Evidence and method: MEMORY.md → *Profiling the Recursion Gap* and
+      *Counting Function Entries Exactly*; `scripts/bench_calls.py`.
 - [ ] **Strings** — add a `string` type (UTF-8 bytes + length, not a Rust
       `String`), string literals in the lexer, `+` concatenation, `print`
       support, comparison operators. Needs a GC or arena decision first — see
@@ -99,8 +117,11 @@
 - [ ] **Arrays** — `number[]` and `boolean[]` with bounds-checked indexing, `push`,
       `length`. Same allocation strategy decision as strings
 - [ ] **`for` loops** — `for (let i = 0; i < n; i = i + 1)` and `for (const x of arr)`
-- [ ] **Float remainder `%`** — Cranelift has no `frem` instruction, so `5.5 % 2.0`
-      needs a runtime helper (`fmod`). Integer `%` already works
+- [x] **Float remainder `%`** — `5.5 % 2.0` used to be rejected because
+      Cranelift has no `frem` instruction. The runtime now provides
+      `ts_fmod`, which is C's `fmod`: it truncates toward zero and takes the
+      sign of the dividend, exactly like JavaScript's `%` (verified against
+      Node). Integer `%` is unchanged — it is still a single `srem`
 - [ ] **Explicit `int`/`number` conversion** — `x as int` would let a program
       narrow deliberately instead of relying on literal adaptation
 
@@ -148,6 +169,13 @@ to the roadmap:
   3. **`comptime` (compile-time evaluation) and FFI** — both are large
      language features, but FFI in particular is what would make this usable
      for real programs (calling into C libraries) rather than demos.
+  4. **Its recursion-rewriting pass** — the one thing it does that we do not,
+     and the reason it wins on recursive code. Measured: it rewrites a
+     self-recursive function into a double loop around a single recursive
+     call, cutting the number of function entries by 5.24x. Its own entries
+     are ~2.4x more expensive than ours, and the net is ~2x on fib. It
+     applies to every self-recursive shape we tried, so it is a general
+     optimiser, not a fib special case. Scoped as a High-priority item above.
 - **AssemblyScript** — compiles a TS-like language to WebAssembly with an
   explicit, GC-free memory model (`--runtime stub` gives 1-3 KiB runtimes).
   Worth studying their managed-object layout before designing tsc's runtime,
@@ -191,9 +219,10 @@ Recorded per AGENTS.md Step 7. Total is /30.
 | 2026-11-01 (post-benchmark) | 5 | 4 | 4 | 5 | 4 | 5 | 27 |
 | 2026-11-01 (post-int) | 5 | 4 | 4 | 5 | 5 | 5 | 28 |
 | 2026-11-02 (post-stack-guard) | 5 | 4 | 4 | 5 | 5 | 5 | 28 |
+| 2026-11-02 (post-profiling) | 5 | 4 | 4 | 5 | 5 | 5 | 28 |
 
-**Evidence (2026-11-02, post-stack-guard)**:
-- *Correctness 5/5*: `cargo test` green — 81 inline unit tests + 19 integration
+**Evidence (2026-11-02, post-profiling)**:
+- *Correctness 5/5*: `cargo test` green — 82 inline unit tests + 20 integration
   tests. Every language feature has a runnable example, and every number the
   runtime prints is verified byte-identical to JavaScript's `Number::toString`.
   The benchmark found and fixed a real precision bug (`%g` truncating to six
@@ -204,15 +233,20 @@ Recorded per AGENTS.md Step 7. Total is /30.
   published build: **~2000x smaller artifacts than the engine-bundling
   toolchains, ~2.5x faster startup, fastest compile time**, and within noise of
   scriptc on tight loops. Unbounded recursion is now reported cleanly instead
-  of crashing. Not 5 — a ~1.7x recursion gap to scriptc remains (profiling
-  queued), and there is no cross-platform or UB/valgrind pass.
+  of crashing. Not 5 — the recursion gap to scriptc is still open, but
+  **profiling has shown it is not a codegen defect**: our calls are the
+  cheaper of the two (1.47 ns per entry against 3.8 ns) and the gap is that
+  scriptc makes 5.24x fewer entries. There is also still no cross-platform or
+  UB/valgrind pass.
 - *Maintainability 4/5*: `codegen.rs` is still one large `FnGen` impl, but it
   is covered by 46 unit tests, so the risk of changing it is measured rather
-  than assumed. Clippy clean.
+  than assumed. Clippy clean. `scripts/bench_calls.py` was rewritten because
+  it measured the wrong thing — it is now self-checking (`--self-test`).
 - *Docs 5/5*: README, SPEC, ARCHITECTURE, TODO, MEMORY, AGENTS, and
   `bench/RESULTS.md` all present, mutually linked, and doc-sync enforced by
   `cargo test`. The benchmark report is generated, not hand-written, so it
-  cannot drift from reality.
+  cannot drift from reality. MEMORY.md's headline conclusion about the
+  recursion gap was wrong and has been corrected against measurements.
 - *Wiring 5/5*: AST variants handled in both parser and codegen; a wiring
   guard drives one program per AST variant and asserts the compiler never
   panics; rejected programs always produce a diagnostic. CLI flags documented;
@@ -221,7 +255,8 @@ Recorded per AGENTS.md Step 7. Total is /30.
   target-lexicon); no speculative crates; the CLI avoids `clap` in favour of
   hand-rolled parsing; the shipped runtime is ~120 lines of C.
 
-**Next weakest area**: Codegen (4/5) — the remaining item is **the recursion
-gap to scriptc** (ruled out instruction count, arithmetic and spills; needs
-profiling, not more guessing). Stack-overflow detection is done: unbounded
-recursion is reported cleanly instead of crashing.
+**Next weakest area**: Codegen (4/5) — two concrete items. **The recursion gap
+to scriptc** is now scoped: it needs a recursion-rewriting pass, and it is a
+missing feature rather than a defect (our per-entry cost is already the
+better of the two). **A UB/valgrind pass** is the other, and is the only
+remaining gap under *Correctness*.

@@ -8,7 +8,7 @@ A tiny TypeScript-subset compiler that emits **native binaries**, written in Rus
 Hand-written lexer and recursive-descent parser, type-checking code generation on
 top of [Cranelift](https://cranelift.dev/), and a small C runtime linked
 with the system C compiler. No LLVM, no JavaScript engine, no runtime
-dependency beyond libc.
+dependency beyond libc and libm.
 
 ```sh
 cargo install compiler     # installs a binary named `tsc`
@@ -189,11 +189,15 @@ binary instead of 60 MiB, ~2000x smaller, and ~2.5x faster to start.
 
 **Where we lose.** The honest comparison is [`scriptc`](https://scriptc.dev)
 (Vercel Labs), the only other engine-free native TypeScript compiler: it beats
-us on call-heavy code (fib: 29 ms vs our 50 ms). The evidence says **this is
-call overhead, not arithmetic** — our tight loop already ties scriptc, and
-switching that loop to 64-bit integers makes it 1.4x faster, while the same
-change does nothing for recursive calls (0.89x). Closing the gap means
-compiling calls better, not computing numbers better.
+us on call-heavy code (fib: 29 ms vs our 50 ms). Profiling both binaries shows
+this is **not** a difference in the cost of a call — our calls are the cheaper
+of the two (1.47 ns per entry against scriptc's 3.8 ns). It is a difference in
+**how many calls are made**: scriptc rewrites a self-recursive function into a
+loop around a single recursive call, which cuts the number of function entries
+by 5.24x. Our tight loop already ties scriptc, and switching that loop to
+64-bit integers makes it 1.4x faster while the same change does nothing for
+recursive calls (0.98x) — the arithmetic was never the issue. Closing the gap
+means rewriting recursion, not compiling calls better.
 
 **Where nobody wins.** On a tight numeric counting loop, V8 and
 JavaScriptCore are excellent at that shape, and Cranelift's optimiser does

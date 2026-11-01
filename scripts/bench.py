@@ -486,7 +486,14 @@ def main() -> int:
 
     results: list[Result] = []
     overhead = spawn_overhead()
+    # The host's load decides how noisy the run is: the process-spawn floor
+    # is ~5ms idle and ~20ms busy, and it changes every ratio.
+    try:
+        load_avg: float | None = os.getloadavg()[0]
+    except OSError:
+        load_avg = None
     print(f"process spawn overhead (floor for every runtime figure): {overhead * 1000:.2f}ms")
+    print(f"machine load average: {load_avg:.1f}" if load_avg is not None else "machine load average: unavailable")
     with tempfile.TemporaryDirectory(prefix="tsc-bench-") as tmp:
         keep = Path(tmp)
 
@@ -584,7 +591,14 @@ def main() -> int:
             print(f"  {name}: {outs}", file=sys.stderr)
         return 2
 
-    write_report(results, WORKLOADS, Path(args.out), args.quick, overhead * 1000)
+    write_report(
+        results,
+        WORKLOADS,
+        Path(args.out),
+        args.quick,
+        overhead * 1000,
+        load_avg,
+    )
     print(f"\nreport written to {args.out}")
     return 0
 
@@ -598,7 +612,14 @@ def size_phrase(ours: int, theirs: int) -> str:
     return f"{ours / theirs:.1f}x smaller artifact"
 
 
-def write_report(results, workloads, path: Path, quick: bool, overhead_ms: float = 0.0) -> None:
+def write_report(
+    results,
+    workloads,
+    path: Path,
+    quick: bool,
+    overhead_ms: float = 0.0,
+    load_avg: float | None = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
     # Per-toolchain startup baseline: the trivial program measures process
@@ -618,6 +639,16 @@ def write_report(results, workloads, path: Path, quick: bool, overhead_ms: float
         f"- CPUs: {os.cpu_count()}",
         f"- Mode: {'quick' if quick else 'full'}",
         f"- Process spawn overhead (included in every runtime figure): {overhead_ms:.2f}ms",
+    ]
+    if load_avg is not None:
+        # The spawn floor is ~5ms on an idle host and ~20ms on a busy one, and
+        # it changes every *ratio* (the absolute differences stay the same).
+        # Recording it makes the numbers in this report interpretable.
+        lines.append(
+            f"- Machine load average when the run started: {load_avg:.1f}"
+            + ("  (busy host: the runtime ratios are noisy)" if load_avg > 4 else "")
+        )
+    lines += [
         "",
         "Every toolchain compiles the same program and must print the same",
         "result; the harness fails if they disagree. `compute` is the runtime",
