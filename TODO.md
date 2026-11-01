@@ -30,9 +30,11 @@
 - [x] **Publishable package metadata** — description, Apache-2.0 `LICENSE`,
       repository/homepage, keywords, categories, `rust-version = "1.96"` (the
       dependency MSRV), `[[bin]] name = "tsc"` so the installed binary keeps its
-      name despite the `tsc-rs` package name
-- [x] **Published to crates.io as `tsc-rs` v0.1.0** — `cargo publish --dry-run`
-      green; `cargo package --list` reviewed (no local-only files shipped)
+      name despite the `compiler` package name
+- [x] **Published to crates.io as `compiler` v0.1.0** — `cargo publish --dry-run`
+      green; `cargo package --list` reviewed (no local-only files shipped);
+      the earlier `tsc-rs` v0.1.0 publish was yanked (names are permanent, so a
+      rename means a new crate)
 
 ## Next
 

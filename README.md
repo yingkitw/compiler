@@ -8,7 +8,7 @@ with the system C compiler.
 ## Install
 
 ```sh
-cargo install tsc-rs      # installs a binary named `tsc`
+cargo install compiler     # installs a binary named `tsc`
 ```
 
 Requires Rust 1.96+ and a C compiler (`cc`) on `PATH` for linking.

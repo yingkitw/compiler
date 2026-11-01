@@ -1,5 +1,5 @@
 [package]
-name = "tsc-rs"
+name = "compiler"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.96"
@@ -16,8 +16,8 @@ exclude = [
 ]
 
 [[bin]]
-# The package is `tsc-rs` (the crates.io name), but the installed binary is
-# still `tsc`, which is what users type.
+# The package is `compiler` (the crates.io name), but the installed binary is
+# `tsc`, which is what users type.
 name = "tsc"
 path = "src/main.rs"
 

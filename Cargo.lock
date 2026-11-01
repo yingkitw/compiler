@@ -36,6 +36,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
+name = "compiler"
+version = "0.1.0"
+dependencies = [
+ "cranelift-codegen",
+ "cranelift-frontend",
+ "cranelift-module",
+ "cranelift-object",
+ "target-lexicon",
+]
+
+[[package]]
 name = "cranelift-assembler-x64"
 version = "0.136.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -384,17 +395,6 @@ name = "target-lexicon"
 version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
-
-[[package]]
-name = "tsc-rs"
-version = "0.1.0"
-dependencies = [
- "cranelift-codegen",
- "cranelift-frontend",
- "cranelift-module",
- "cranelift-object",
- "target-lexicon",
-]
 
 [[package]]
 name = "unicode-ident"
