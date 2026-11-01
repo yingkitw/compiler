@@ -15,6 +15,8 @@ exclude = [
     "MEMORY.md",     # agent-local working doc (gitignored)
 ]
 
+authors = ["Ying Kit WONG"]
+
 [[bin]]
 # The package is `compiler` (the crates.io name), but the installed binary is
 # `tsc`, which is what users type.
