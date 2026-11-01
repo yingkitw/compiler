@@ -190,10 +190,10 @@ Recorded per AGENTS.md Step 7. Total is /30.
 | 2026-11-01 | 4 | 4 | 3 | 4 | 4 | 5 | 24 |
 | 2026-11-01 (post-benchmark) | 5 | 4 | 4 | 5 | 4 | 5 | 27 |
 | 2026-11-01 (post-int) | 5 | 4 | 4 | 5 | 5 | 5 | 28 |
-| 2026-11-01 (post-stack-guard) | 5 | 4 | 4 | 5 | 5 | 5 | 28 |
+| 2026-11-02 (post-stack-guard) | 5 | 4 | 4 | 5 | 5 | 5 | 28 |
 
-**Evidence (2026-11-01, post-int)**:
-- *Correctness 5/5*: `cargo test` green — 80 inline unit tests + 17 integration
+**Evidence (2026-11-02, post-stack-guard)**:
+- *Correctness 5/5*: `cargo test` green — 81 inline unit tests + 19 integration
   tests. Every language feature has a runnable example, and every number the
   runtime prints is verified byte-identical to JavaScript's `Number::toString`.
   The benchmark found and fixed a real precision bug (`%g` truncating to six
@@ -207,7 +207,7 @@ Recorded per AGENTS.md Step 7. Total is /30.
   of crashing. Not 5 — a ~1.7x recursion gap to scriptc remains (profiling
   queued), and there is no cross-platform or UB/valgrind pass.
 - *Maintainability 4/5*: `codegen.rs` is still one large `FnGen` impl, but it
-  is covered by 45 unit tests, so the risk of changing it is measured rather
+  is covered by 46 unit tests, so the risk of changing it is measured rather
   than assumed. Clippy clean.
 - *Docs 5/5*: README, SPEC, ARCHITECTURE, TODO, MEMORY, AGENTS, and
   `bench/RESULTS.md` all present, mutually linked, and doc-sync enforced by
@@ -219,9 +219,9 @@ Recorded per AGENTS.md Step 7. Total is /30.
   the benchmark exercises the real CLI end to end.
 - *Footprint 5/5*: five dependencies, all essential (Cranelift × 4 +
   target-lexicon); no speculative crates; the CLI avoids `clap` in favour of
-  hand-rolled parsing; the shipped runtime is ~90 lines of C.
+  hand-rolled parsing; the shipped runtime is ~120 lines of C.
 
-**Next weakest area**: Codegen (4/5) — two concrete items, both now queued with
-evidence: **stack-overflow detection** (deep recursion segfaults today) and
-**the recursion gap to scriptc** (ruled out instruction count, arithmetic and
-spills; needs profiling, not more guessing).
+**Next weakest area**: Codegen (4/5) — the remaining item is **the recursion
+gap to scriptc** (ruled out instruction count, arithmetic and spills; needs
+profiling, not more guessing). Stack-overflow detection is done: unbounded
+recursion is reported cleanly instead of crashing.
