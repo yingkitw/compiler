@@ -182,6 +182,12 @@ fails if they disagree.
 Full numbers, methodology, and the raw report: [`bench/RESULTS.md`](bench/RESULTS.md).
 Regenerate with `python3 scripts/bench.py`.
 
+The **Startup** row is the one sensitive to the host: spawning a process costs
+~5 ms on an idle machine and ~20 ms on a busy one, which changes every ratio
+without changing the differences. The table above is from an idle host; the
+committed report records the load average of the run it came from, so you can
+tell which numbers to trust.
+
 **Where we win.** `deno compile` and `bun build --compile` embed a JavaScript
 engine (V8 / JavaScriptCore) in the binary. We compile to machine code, so
 there is no engine to ship and nothing to initialise at startup — a 33 KiB
