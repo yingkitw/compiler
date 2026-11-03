@@ -19,6 +19,10 @@ design is the way it is.
                     └───────────┬──────────┘
                                 │  ast::Program
                     ┌───────────▼──────────┐
+                    │      rewrite.rs       │  tail calls → loops
+                    └───────────┬──────────┘
+                                │  ast::Program
+                    ┌───────────▼──────────┐
                     │      codegen.rs       │  Program → Cranelift IR
                     │   (type checks too)   │  → object file bytes
                     └───────────┬──────────┘
@@ -33,8 +37,8 @@ design is the way it is.
 ```
 
 **Dependency direction is strictly one-way**: `main` → `lexer` → `parser` →
-`codegen` → `ast`. `ast.rs` depends on nothing inside the crate. No cycles, no
-back-references.
+`rewrite` → `codegen` → `ast`. `ast.rs` depends on nothing inside the crate.
+No cycles, no back-references.
 
 ### `main.rs` — CLI entry point
 - Parses arguments by hand: `-o` / `--output`, `-c` / `--compile-only`,
@@ -75,6 +79,46 @@ back-references.
   a `let` needs a type or an initializer, and `main` must have the right shape.
   All type checking happens later.
 
+### `rewrite.rs` — tail-call elimination
+- `eliminate_tail_calls(prog: &mut Program)` rewrites the program in place.
+- It runs **between parsing and code generation**, so `codegen.rs` sees only
+  ordinary statements and needs no knowledge of the optimisation.
+- **What it does**: a self-recursive call in tail position becomes a loop.
+  A function whose body is
+  ```
+  if (p0 <= limit) { return base; }
+  return f(p0 - k, p1, ...);
+  ```
+  becomes
+  ```
+  while (p0 > limit) { p0 = p0 - k; }
+  return base;
+  ```
+  and the accumulator form (`return f(p0 - k, ...) + e;`) carries the
+  accumulator along the loop instead of on the stack. A void function whose
+  tail call is a statement (`f(p0 - k);`) is rewritten the same way, with the
+  statements that run on every level moved into the loop.
+- **Why it matters**: a tail call does not need the frame it was made in, so
+  the recursion costs one frame instead of one per level. A recursion of ten
+  million levels now runs in constant stack space; before, it died with
+  "maximum recursion depth exceeded".
+- **What it deliberately does not do**: the rewrite only fires on a narrow,
+  recognisable shape (see the module's own documentation). Anything it does
+  not recognise is left exactly as it was — a rewrite that fires on the wrong
+  program is a miscompile, and a missed optimisation is always the cheaper
+  mistake.
+- **The rule that keeps it honest**: the rewrite changes *when* things run, so
+  every statement it moves has to run the same number of times. Three
+  consequences, each of which was a miscompile before the rule was added:
+  - A statement *before* the base case runs once per recursion level in the
+    source program and once in the rewritten one, so the base case has to be
+    the body's first statement.
+  - An accumulator term is evaluated while the recursion unwinds — from the
+    innermost level outwards — and the rewrite evaluates it from the
+    outermost level inwards, so the term must have no side effects.
+  - The statements of a void tail call run in a fresh frame per level, so
+    they may not assign, and they may not call the function again.
+
 ### `codegen.rs` — type checking + machine code
 - `compile(program: &Program) -> Result<Vec<u8>, String>` returns the bytes of a
   relocatable object file.
@@ -105,6 +149,9 @@ Vec<Token>                     every token carries its line number
    │  parser::parse
    ▼
 ast::Program                   Type / Expr / Stmt trees
+   │  rewrite::eliminate_tail_calls
+   ▼
+ast::Program                   self-recursive tail calls turned into loops
    │  codegen::compile
    ├─ pass 1: collect Stmt::Func → FuncId + signature   (enables recursion
    │                                                        and forward refs)
@@ -198,6 +245,47 @@ JavaScript toolchains matched each other.
 **Trade-off**: the runtime grew from one line to roughly ninety, and
 `print(3.14159 * 2 * 2)` changed from `12.5664` to `12.56636` — a visible
 behaviour change, but the old value was lossy.
+
+### A rewrite pass between parsing and code generation
+**Decision**: `rewrite.rs` is a separate pass that runs on the AST between
+`parser::parse` and `codegen::compile`, rather than an optimisation inside
+the code generator.
+**Why**: the code generator is the largest and most delicate module in the
+project, and an optimisation does not belong in the middle of it. Keeping the
+rewrite on the AST means `codegen.rs` needs no knowledge of it at all, and
+the rewrite can be tested on its own — by inspecting the AST it produces.
+**Trade-off**: the compiler has one more stage, and the rewrite can only use
+what the AST knows. In particular it cannot see types, so it has to be
+conservative about which shapes it accepts: it rewrites only a call it can
+see is self-recursive, in tail position, with a decreasing argument.
+
+### Tail-call elimination is narrow on purpose
+**Decision**: the rewrite fires only on a shape it can recognise exactly — a
+self-recursive call in tail position, whose arguments are parameters plus or
+minus constants, preceded by an `if` with no `else` whose only action is to
+return.
+**Why**: a rewrite that fires on the wrong program is a miscompile, and a
+missed optimisation is only a missed optimisation. The narrow shape is the
+one that covers the common cases (a tail-recursive loop, a tail-recursive
+accumulator) and it is easy to check by reading the module.
+**Trade-off**: mutual recursion, a call whose result is used after it
+returns, and a recursion whose argument is computed rather than stepped are
+all left alone. Each of those could be handled by widening the shape, at
+the cost of a rule that is harder to be sure about.
+
+### The rewrite is checked by differential tests, not by inspection
+**Decision**: the end-to-end test for tail-call elimination compiles each
+shape twice — once with the tail call, once as the equivalent program written
+with a loop — and asserts that the two print exactly the same thing.
+**Why**: the rewrite changes *when* statements run, and reading the module
+does not prove that it does not change *what* they compute. Two real
+miscompiles got through code review and were caught only by running the
+programs: an accumulator term that called a function was evaluated in the
+opposite order, and a local declared before the base case kept the outermost
+level's value. A differential test catches both classes by construction,
+because the reference program is written the way a human would write it.
+**Trade-off**: the reference versions have to be written by hand, so each
+shape costs a second program to maintain.
 
 ### A competitive benchmark in the loop
 **Decision**: `scripts/bench.py` compiles the same programs with every

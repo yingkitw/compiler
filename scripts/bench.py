@@ -735,6 +735,10 @@ def write_report(
         num_compute = num_row.runtime_best - baseline.get(num_row.toolchain, 0.0)
         int_compute = int_row.runtime_best - baseline.get(int_row.toolchain, 0.0)
         speedup = num_compute / int_compute if int_compute > 1e-9 else float("inf")
+        if speedup >= 1.0:
+            verdict = f"**The `int` type is {speedup:.2f}x faster** on this workload."
+        else:
+            verdict = f"**The `int` type is {1 / speedup:.2f}x slower** on this workload."
         return [
             f"## {title}",
             "",
@@ -745,7 +749,7 @@ def write_report(
             f"| `number` (f64) | {human_size(num_row.size)} | {num_row.runtime_best * 1000:.2f}ms | {num_compute * 1000:.2f}ms |",
             f"| `int` (i64) | {human_size(int_row.size)} | {int_row.runtime_best * 1000:.2f}ms | {int_compute * 1000:.2f}ms |",
             "",
-            f"**The `int` type is {speedup:.2f}x faster** on this workload.",
+            verdict,
             "",
         ]
 

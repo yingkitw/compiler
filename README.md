@@ -71,6 +71,8 @@ let y = 2;                    // inferred: number
 const pi: number = 3.14159;
 
 // Functions — recursion and forward references both work.
+// A self-recursive call in tail position is turned into a loop, so a tail
+// recursion runs in constant stack space.
 function double(n: number): number { return n * 2; }
 function fib(n: number): number {
     if (n < 2) { return n; }
@@ -129,8 +131,8 @@ error: cannot initialize 'x: number' with a value of type boolean
 ## How it works
 
 ```
- source ──lex──▶ tokens ──parse──▶ AST ──codegen──▶ object file ──cc──▶ binary
-   lexer.rs       parser.rs   ast.rs   codegen.rs      (Cranelift)   runtime.c
+ source ──lex──▶ tokens ──parse──▶ AST ──rewrite──▶ AST ──codegen──▶ object ──cc──▶ binary
+  lexer.rs      parser.rs   ast.rs   rewrite.rs   ast.rs   codegen.rs  (Cranelift) runtime.c
 ```
 
 | Stage | What happens |
@@ -138,9 +140,10 @@ error: cannot initialize 'x: number' with a value of type boolean
 | `src/lexer.rs` | Tokenizer. Every token carries its source line, so diagnostics point at a line |
 | `src/parser.rs` | Recursive descent, one method per precedence level |
 | `src/ast.rs` | Shared AST types — the contract between parser and codegen |
+| `src/rewrite.rs` | Tail-call elimination: a self-recursive call in tail position becomes a loop |
 | `src/codegen.rs` | One pass that type-checks **and** emits Cranelift IR: SSA variables, basic blocks for `if`/`while`, and for short-circuit `&&` / `\|\|` |
 
-Three design points worth knowing:
+Four design points worth knowing:
 
 - **A tiny C runtime instead of variadic `printf`.** The generated code imports
   `ts_print_number(double)` and `ts_print_bool(signed char)` — fixed-arity
@@ -152,6 +155,11 @@ Three design points worth knowing:
   alternate signal stack, so the program reports
   `error: maximum recursion depth exceeded` and exits with status 1 — and
   whatever it printed before the overflow is preserved.
+- **A tail call costs no stack.** A self-recursive call in tail position is
+  rewritten into a loop before code generation, so the recursion runs in
+  constant stack space — ten million levels deep, where it used to overflow.
+  The rewrite only fires on a shape it can recognise exactly (see
+  [SPEC.md](SPEC.md)); anything else is compiled as written.
 
 Read [ARCHITECTURE.md](ARCHITECTURE.md) for the full design rationale, and
 [SPEC.md](SPEC.md) for the complete grammar and CLI contract.
@@ -176,37 +184,42 @@ fails if they disagree.
 
 | | compiler | scriptc | compiler v0.1.0 | deno compile | bun --compile | tsrust + node | tsc + node |
 |---|---|---|---|---|---|---|---|
-| **Artifact size** | **33 KiB** | 90 KiB | 33 KiB | 65 MiB | 60 MiB | 133 B JS | 119 B JS |
-| **Startup** | **8.1 ms** | 7.8 ms | 7.8 ms | 19.2 ms | 23.1 ms | 149 ms | 156 ms |
-| **Compile time** | **0.21 s** | 0.14 s | 0.15 s | 2.4 s | 1.3 s | 0.50 s | 0.56 s |
-| **fib(35) compute** | 50 ms | **29 ms** | 48 ms | 108 ms | 51 ms | 106 ms | 105 ms |
-| **loop(1e8) compute** | 109 ms | 103 ms | 115 ms | 113 ms | 105 ms | 126 ms | 109 ms |
+| **Artifact size** | **33.7 KiB** | 90 KiB | 32.8 KiB | 65.1 MiB | 60.5 MiB | 30 B JS | 16 B JS |
+| **Startup** | **25.4 ms** | 24.6 ms | 22.9 ms | 34.7 ms | 34.4 ms | 154 ms | 151 ms |
+| **Compile time** | **0.19 s** | 0.11 s | 0.17 s | 1.26 s | 1.14 s | 0.40 s | 0.32 s |
+| **fib(35) compute** | 50 ms | **27 ms** | 46 ms | 93 ms | 47 ms | 85 ms | 95 ms |
+| **loop(1e8) compute** | **97 ms** | 107 ms | 100 ms | 99 ms | 101 ms | 99 ms | 96 ms |
 
 Full numbers, methodology, and the raw report: [`bench/RESULTS.md`](bench/RESULTS.md).
 Regenerate with `python3 scripts/bench.py`.
 
 The **Startup** row is the one sensitive to the host: spawning a process costs
 ~5 ms on an idle machine and ~20 ms on a busy one, which changes every ratio
-without changing the differences. The table above is from an idle host; the
-committed report records the load average of the run it came from, so you can
-tell which numbers to trust.
+without changing the differences. The committed report was taken with a load
+average of 5.7 and a 20.7 ms spawn floor, so the startup row above is a busy-host
+number; on an idle host it reads about a third of that. The report records the
+load average of the run it came from, so you can tell which numbers to trust.
 
 **Where we win.** `deno compile` and `bun build --compile` embed a JavaScript
 engine (V8 / JavaScriptCore) in the binary. We compile to machine code, so
 there is no engine to ship and nothing to initialise at startup — a 33 KiB
-binary instead of 60 MiB, ~2000x smaller, and ~2.5x faster to start.
+binary instead of 60 MiB, ~2000x smaller, and ~1.4x faster to start.
 
 **Where we lose.** The honest comparison is [`scriptc`](https://scriptc.dev)
 (Vercel Labs), the only other engine-free native TypeScript compiler: it beats
-us on call-heavy code (fib: 29 ms vs our 50 ms). Profiling both binaries shows
-this is **not** a difference in the cost of a call — our calls are the cheaper
-of the two (1.47 ns per entry against scriptc's 3.8 ns). It is a difference in
-**how many calls are made**: scriptc rewrites a self-recursive function into a
-loop around a single recursive call, which cuts the number of function entries
-by 5.24x. Our tight loop already ties scriptc, and switching that loop to
-64-bit integers makes it 1.4x faster while the same change does nothing for
-recursive calls (0.98x) — the arithmetic was never the issue. Closing the gap
-means rewriting recursion, not compiling calls better.
+us on call-heavy code (fib: 27 ms of compute against our 50 ms). Profiling both
+binaries shows this is **not** a difference in the cost of a call — our calls are
+the cheaper of the two (1.48 ns per entry against scriptc's effective 1.05 ns).
+It is a difference in **how many calls are made**: scriptc rewrites a
+self-recursive function into a loop around a single recursive call, which cuts
+the number of function entries by 5.24x. We now do the same for the *chain*
+shape — `f(n) = f(n-1)` is a loop on our side too, so `scripts/bench_shape.py`
+reports no per-entry cost for either compiler — but fib's shape is a *binary*
+recursion, which no tail-call rewrite can touch. Closing that gap means a
+linear-recurrence rewrite, not compiling calls better. Our tight loop already
+ties scriptc, and switching that loop to 64-bit integers makes it 1.4x faster
+while the same change does nothing for recursive calls — the arithmetic was
+never the issue.
 
 **Where nobody wins.** On a tight numeric counting loop, V8 and
 JavaScriptCore are excellent at that shape, and Cranelift's optimiser does
@@ -220,11 +233,12 @@ illustration of what this project is doing differently: we do not emit
 JavaScript at all.
 
 **The `int` type.** `int` (64-bit) keeps arithmetic exact past 2^53 and is
-measurably faster where arithmetic is the work: **1.43x** on an arithmetic-only
-loop and **1.94x** when a function call happens per iteration. It is a wash on
-recursion (0.98x), which is the evidence that the gap to scriptc is not about
-arithmetic. It is not a cross-toolchain comparison — the JavaScript toolchains
-have no integer type.
+measurably faster where arithmetic is the work: **1.40x** on an arithmetic-only
+loop and **1.94x** when a function call happens per iteration. It does not help
+on recursion (0.83x in the latest run, against 0.98x in an earlier one — the
+difference is the host's load, not the code), which is the evidence that the
+gap to scriptc is not about arithmetic. It is not a cross-toolchain comparison —
+the JavaScript toolchains have no integer type.
 
 ## Testing
 

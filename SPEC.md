@@ -150,6 +150,51 @@ JavaScript's `%`.
 - Booleans print as `true` / `false`.
 - There is no `print` overload for `void`; printing a void expression is an error.
 
+### Tail-call elimination
+
+A self-recursive call in tail position is turned into a loop before code
+generation. The rewrite fires only on a shape it can recognise exactly:
+
+```ts
+function f(n: number): number {
+    if (n < 1) { return 0; }   // the base case, and the first statement
+    return f(n - 1);            // a tail call: the last statement
+}
+```
+
+becomes
+
+```ts
+function f(n: number): number {
+    while (n >= 1) { n = n - 1; }
+    return 0;
+}
+```
+
+The observable effect is that a tail recursion no longer uses the stack: a
+recursion of ten million levels runs in constant stack space, where it used
+to fail with `maximum recursion depth exceeded`. A tail recursion whose base
+case is never reached now loops forever instead of overflowing the stack —
+the same as any other infinite loop in the language.
+
+The rewrite never changes what a program computes, and it is deliberately
+narrow. It fires only when
+
+- the base case is the *first* statement of the function body — a statement
+  before it would run once per recursion level in the source program and once
+  in the rewritten one — and is an `if` with no `else` whose only action is to
+  return;
+- its condition compares the first parameter against a literal;
+- the recursive call is the last statement of the body, and every argument is
+  a parameter plus or minus an integer constant, with the first parameter's
+  step downwards;
+- an accumulator term (`return f(n - 1) + x;`) has no side effects, since the
+  rewrite evaluates it in the opposite order;
+- the statements that run on every level of a void tail call (`f(n - 1);` in a
+  `void` function) neither call the function again nor assign.
+
+Anything else is compiled exactly as written.
+
 ### Type rules
 
 - Arithmetic (`+`, `-`, `*`, `/`) requires both operands to have the *same*

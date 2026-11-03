@@ -6,6 +6,7 @@ mod ast;
 mod codegen;
 mod lexer;
 mod parser;
+mod rewrite;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -73,7 +74,11 @@ fn run(input: &Path, output: Option<PathBuf>, compile_only: bool) -> Result<Path
         .map_err(|e| format!("cannot read {}: {}", input.display(), e))?;
 
     let toks = lexer::lex(&src)?;
-    let prog = parser::parse(toks)?;
+    let mut prog = parser::parse(toks)?;
+    // Tail-call elimination runs between parsing and code generation: it
+    // rewrites a self-recursive call in tail position into a loop, so the
+    // recursion no longer needs a stack frame per level.
+    rewrite::eliminate_tail_calls(&mut prog);
     let obj = codegen::compile(&prog)?;
 
     let stem = input.with_extension("");

@@ -23,6 +23,21 @@
       in an `int` function used to be rejected, because the return statement did
       not pass the expected type to the expression. Found while writing a
       benchmark program, fixed, and covered by a regression test
+- [x] **Tail-call elimination** — a self-recursive call in tail position
+      becomes a loop, so the recursion costs one frame instead of one per
+      level. A recursion of ten million levels now runs in constant stack
+      space; before, it died with "maximum recursion depth exceeded". The
+      rewrite runs between parsing and code generation (`src/rewrite.rs`),
+      so the code generator knows nothing about it. It fires only on a shape
+      it can recognise exactly — the base case must be the body's first
+      statement, the arguments must be parameters stepped by constants, and
+      an accumulator term must have no side effects — because a rewrite that
+      fires on the wrong program is a miscompile. Two miscompiles were found
+      by the audit and fixed: an accumulator term that called a function was
+      evaluated in the opposite order, and a local declared before the base
+      case kept the outermost level's value. The end-to-end test now
+      compiles every shape twice — with the tail call and as the equivalent
+      loop — and asserts the two print the same thing
 - [x] **Stack-overflow detection** — unbounded recursion used to exhaust the
       stack and die with SIGSEGV, killing the program and losing whatever it
       had printed. The runtime now installs a SIGSEGV handler on an alternate
@@ -59,14 +74,15 @@
       wrong (it is `2*F(d+1)-1`), and duly reported 0.04 ns/call
 
 ### Quality
-- [x] **82 inline unit tests + 20 integration tests** — all passing; `cargo clippy
+- [x] **104 inline unit tests + 26 integration tests** — all passing; `cargo clippy
       --all-targets` exits 0; doc-sync enforced by `tests/docs_sync.rs`
 - [x] **Inline unit tests for the lexer, parser, and type rules** — 12 lexer tests
       (token kinds, comments, line tracking, exact integer literals, lex errors),
       23 parser tests (precedence, associativity, statement forms, parse errors),
       46 codegen tests (every type rule in `FnGen`, the `int` type, the runtime
       entry points, plus acceptance cases for scoping, shadowing, recursion, and
-      forward references)
+      forward references), and 23 rewrite tests (every shape the tail-call
+      rewrite accepts, and every shape it must refuse)
 - [x] **Wiring guard** — a test that drives one program per AST variant and
       asserts the compiler never panics, plus a test that rejected programs
       always produce a diagnostic and never a successful compile
@@ -97,24 +113,29 @@
 ## Next
 
 ### High priority
-- [ ] **A recursion-rewriting pass — the measured reason we lose to
-      scriptc on recursive code.** Profiling (2026-11-02: `sample` on both
-      binaries plus an exact entry count) showed the gap is *algorithmic*,
-      not a codegen problem: on `fib(44)` we make **2,269,806,339** function
-      entries at **1.47 ns** each, scriptc makes **433,494,437** entries at
-      **3.8 ns** each. scriptc's compiler rewrites the recursion into a
-      double loop around one recursive call — the transformed tree for
-      `fib(6)` is 5 entries where the source recursion has 25 — which cuts
-      the entry count by a constant **5.24x** (F(n-1) against 2·F(n+1)-1).
-      Its own entries are ~2.4x more expensive than ours (it saves 12
-      registers and checks the stack limit per call), so the net is ~2x.
-      Scope to decide before starting: the transform only pays off for
-      *self-recursive* functions whose argument decreases by a constant, and
-      it trades code size for entries. A first version could target only the
-      case the benchmark exercises — a function that calls itself with
-      `param - k`, where `param` is an `int`.
+- [ ] **The linear-recurrence rewrite — the rest of the reason we lose to
+      scriptc on recursive code.** The tail-call rewrite (now done) closes the
+      gap on the *chain* shape: `f(n) = f(n-1)` is a loop for us too, which
+      is what scriptc compiles it to. The gap that remains is the *binary*
+      shape. Profiling (2026-11-02: `sample` on both binaries plus an exact
+      entry count) showed the gap is *algorithmic*, not a codegen problem: on
+      `fib(44)` we make **2,269,806,339** function entries at **1.47 ns**
+      each, scriptc makes **433,494,437** entries at **3.8 ns** each.
+      scriptc rewrites the recursion into a double loop around one recursive
+      call, which cuts the entry count by a constant **5.24x**. Its own
+      entries are ~2.4x more expensive than ours (it saves 12 registers and
+      checks the stack limit per call), so the net is ~2x.
+      The transform to implement is the classical one: a *linear recurrence*
+      `f(n) = f(n-1) + f(n-2)` is a loop with two accumulators, so fib
+      becomes O(n) with no recursion at all — which would beat scriptc's
+      partial rewrite rather than match it. The work is in recognising the
+      shape and computing the base values: the accumulator's type, the base
+      case's contribution, and the coefficients all have to line up. Scope it
+      before starting: a first version could target only `f(n) = f(n-1) +
+      f(n-2)` with a literal base case.
       Evidence and method: MEMORY.md → *Profiling the Recursion Gap* and
-      *Counting Function Entries Exactly*; `scripts/bench_calls.py`.
+      *Counting Function Entries Exactly*; `scripts/bench_calls.py`,
+      `scripts/bench_shape.py`.
 - [ ] **Strings** — add a `string` type (UTF-8 bytes + length, not a Rust
       `String`), string literals in the lexer, `+` concatenation, `print`
       support, comparison operators. Needs a GC or arena decision first — see
@@ -169,13 +190,17 @@ to the roadmap:
   3. **`comptime` (compile-time evaluation) and FFI** — both are large
      language features, but FFI in particular is what would make this usable
      for real programs (calling into C libraries) rather than demos.
-  4. **Its recursion-rewriting pass** — the one thing it does that we do not,
+  4. **Its recursion-rewriting pass** — the thing it does that we did not,
      and the reason it wins on recursive code. Measured: it rewrites a
      self-recursive function into a double loop around a single recursive
      call, cutting the number of function entries by 5.24x. Its own entries
      are ~2.4x more expensive than ours, and the net is ~2x on fib. It
      applies to every self-recursive shape we tried, so it is a general
-     optimiser, not a fib special case. Scoped as a High-priority item above.
+     optimiser, not a fib special case. **We now do the tail-call half of
+     it** (`src/rewrite.rs`): the chain shape is a loop on our side too, and
+     `scripts/bench_shape.py` reports no per-entry cost for either compiler.
+     The half that is left is the *linear recurrence* — scoped as a
+     High-priority item above.
 - **AssemblyScript** — compiles a TS-like language to WebAssembly with an
   explicit, GC-free memory model (`--runtime stub` gives 1-3 KiB runtimes).
   Worth studying their managed-object layout before designing tsc's runtime,
@@ -220,43 +245,60 @@ Recorded per AGENTS.md Step 7. Total is /30.
 | 2026-11-01 (post-int) | 5 | 4 | 4 | 5 | 5 | 5 | 28 |
 | 2026-11-02 (post-stack-guard) | 5 | 4 | 4 | 5 | 5 | 5 | 28 |
 | 2026-11-02 (post-profiling) | 5 | 4 | 4 | 5 | 5 | 5 | 28 |
+| 2026-11-03 (post-tail-call) | 5 | 4 | 5 | 5 | 5 | 5 | 29 |
 
-**Evidence (2026-11-02, post-profiling)**:
-- *Correctness 5/5*: `cargo test` green — 82 inline unit tests + 20 integration
+**Evidence (2026-11-03, post-tail-call)**:
+- *Correctness 5/5*: `cargo test` green — 104 inline unit tests + 26 integration
   tests. Every language feature has a runnable example, and every number the
   runtime prints is verified byte-identical to JavaScript's `Number::toString`.
   The benchmark found and fixed a real precision bug (`%g` truncating to six
   significant digits) and a real type bug (`return 0;` rejected in an `int`
-  function). Coverage measurement is still the one gap.
+  function). The tail-call rewrite was **audited before it shipped**: two real
+  miscompiles were found (an accumulator term with a call in it was evaluated
+  in the opposite order; a local declared before the base case kept the
+  outermost level's value), both fixed, and both locked in by tests. The
+  end-to-end test now compiles every rewritten shape twice — with the tail
+  call and as the equivalent loop — and asserts the two agree. Coverage
+  measurement is still the one gap.
 - *Codegen 4/5*: binaries produce reference outputs; PIC verified on macOS
   arm64. Benchmarked against deno, bun, scriptc, tsrust, tsc and our own
   published build: **~2000x smaller artifacts than the engine-bundling
-  toolchains, ~2.5x faster startup, fastest compile time**, and within noise of
-  scriptc on tight loops. Unbounded recursion is now reported cleanly instead
-  of crashing. Not 5 — the recursion gap to scriptc is still open, but
+  toolchains, ~1.4x faster startup, fastest compile time**, and faster than
+  scriptc on tight loops. Unbounded recursion is reported cleanly instead of
+  crashing, and a tail recursion now costs no stack at all. Not 5 — the
+  recursion gap to scriptc is still open on the *binary* shape, but
   **profiling has shown it is not a codegen defect**: our calls are the
-  cheaper of the two (1.47 ns per entry against 3.8 ns) and the gap is that
-  scriptc makes 5.24x fewer entries. There is also still no cross-platform or
+  cheaper of the two (1.48 ns per entry) and the gap is that scriptc makes
+  5.24x fewer entries. The chain shape is closed: both compilers now compile
+  `f(n) = f(n-1)` to a loop. There is also still no cross-platform or
   UB/valgrind pass.
-- *Maintainability 4/5*: `codegen.rs` is still one large `FnGen` impl, but it
-  is covered by 46 unit tests, so the risk of changing it is measured rather
-  than assumed. Clippy clean. `scripts/bench_calls.py` was rewritten because
-  it measured the wrong thing — it is now self-checking (`--self-test`).
+- *Maintainability 5/5*: the code generator is still one large `FnGen` impl,
+  but it is covered by 46 unit tests, and the new optimisation lives in its
+  own module (`src/rewrite.rs`) instead of inside it — the rewrite pass was
+  added without touching the mature module, which is what the Mature Module
+  Policy asks for. `rewrite.rs` has 23 unit tests of its own, one per shape
+  it accepts and one per shape it must refuse. Clippy clean.
+  `scripts/bench_calls.py` was rewritten because it measured the wrong thing —
+  it is now self-checking (`--self-test`).
 - *Docs 5/5*: README, SPEC, ARCHITECTURE, TODO, MEMORY, AGENTS, and
   `bench/RESULTS.md` all present, mutually linked, and doc-sync enforced by
   `cargo test`. The benchmark report is generated, not hand-written, so it
-  cannot drift from reality. MEMORY.md's headline conclusion about the
-  recursion gap was wrong and has been corrected against measurements.
+  cannot drift from reality. The tail-call rewrite is specified in SPEC.md
+  and its rules are stated in the module, the spec, and the tests.
 - *Wiring 5/5*: AST variants handled in both parser and codegen; a wiring
   guard drives one program per AST variant and asserts the compiler never
-  panics; rejected programs always produce a diagnostic. CLI flags documented;
-  the benchmark exercises the real CLI end to end.
+  panics; rejected programs always produce a diagnostic. The rewrite is wired
+  between the parser and the code generator, and it must not hide a type
+  error — a rule with its own test. CLI flags documented; the benchmark
+  exercises the real CLI end to end.
 - *Footprint 5/5*: five dependencies, all essential (Cranelift × 4 +
   target-lexicon); no speculative crates; the CLI avoids `clap` in favour of
-  hand-rolled parsing; the shipped runtime is ~120 lines of C.
+  hand-rolled parsing; the shipped runtime is ~120 lines of C. The rewrite
+  added no dependency and no runtime code.
 
 **Next weakest area**: Codegen (4/5) — two concrete items. **The recursion gap
-to scriptc** is now scoped: it needs a recursion-rewriting pass, and it is a
-missing feature rather than a defect (our per-entry cost is already the
+to scriptc on the binary shape** is now scoped: it needs a linear-recurrence
+rewrite (`f(n) = f(n-1) + f(n-2)` is a loop with two accumulators), and it is
+a missing feature rather than a defect (our per-entry cost is already the
 better of the two). **A UB/valgrind pass** is the other, and is the only
 remaining gap under *Correctness*.
