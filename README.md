@@ -197,7 +197,7 @@ fails if they disagree.
 | **Compile time** | **0.20 s** | 0.11 s | 0.17 s | 1.03 s | 0.83 s | 0.41 s | 0.36 s |
 | **fib(35) runtime** | **22.6 ms** | 47.8 ms | 69.2 ms | 124 ms | 83 ms | 236 ms | 241 ms |
 | **fib(35) unrewritten** | 67.8 ms | **49.0 ms** | 69.4 ms | 125 ms | 81 ms | 245 ms | 239 ms |
-| **loop(1e8) runtime** | **122 ms** | 124 ms | 128 ms | 133 ms | 135 ms | 261 ms | 246 ms |
+| **loop(1e8) runtime** | **122 ms** | 120 ms | 124 ms | 133 ms | 135 ms | 248 ms | 247 ms |
 
 Full numbers, methodology, and the raw report: [`bench/RESULTS.md`](bench/RESULTS.md).
 Regenerate with `python3 scripts/bench.py`.
