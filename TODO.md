@@ -41,7 +41,7 @@
       becomes a loop, so the recursion costs one frame instead of one per
       level. A recursion of ten million levels now runs in constant stack
       space; before, it died with "maximum recursion depth exceeded". The
-      rewrite runs between parsing and code generation (`src/rewrite.rs`),
+      rewrite runs between parsing and code generation (`src/rewrite/`),
       so the code generator knows nothing about it. It fires only on a shape
       it can recognise exactly — the base case must be the body's first
       statement, the arguments must be parameters stepped by constants, and
@@ -204,7 +204,7 @@ to the roadmap:
      are ~2.4x more expensive than ours, and the net is ~2x on fib. It
      applies to every self-recursive shape we tried, so it is a general
      optimiser, not a fib special case. **We now do both halves of it**
-     (`src/rewrite.rs`): the chain shape is a loop on our side too, and a
+     (`src/rewrite/`): the chain shape is a loop on our side too, and a
      linear recurrence is a loop with two accumulators — so `fib(90)`, which
      is 2^90 calls as written, costs ninety. The half that is left is
      scriptc's *wider* set of shapes — scoped as a High-priority item
@@ -300,14 +300,18 @@ Recorded per AGENTS.md Step 7. Total is /30.
   partially optimises, is now **faster on our side than on scriptc's**. The
   one remaining reason this is not 5: there is still no cross-platform or
   UB/valgrind pass.
-- *Maintainability 5/5*: the code generator is still one large `FnGen` impl,
-  but it is covered by 46 unit tests, and both optimisations live in their
-  own module (`src/rewrite.rs`) instead of inside it — the rewrite passes
-  were added without touching the mature module, which is what the Mature
-  Module Policy asks for. `rewrite.rs` has 32 unit tests of its own, one per
-  shape it accepts and one per shape it must refuse. Clippy clean.
-  `scripts/bench_calls.py` was rewritten because it measured the wrong thing —
-  it is now self-checking (`--self-test`).
+- *Maintainability 5/5*: the three biggest modules are directories, and no file
+  is over about 450 lines: `parser/` (the statement forms and the precedence
+  levels), `rewrite/` (the two rewrites and the predicates they share), and
+  `codegen/` (the type lattice, the C shim, and the two halves of the code
+  generator). The split followed the seams the modules already had, so no
+  abstraction was invented — and it was a *move*, so the 113 unit tests and the
+  24 end-to-end tests are what prove it changed nothing. The optimisations
+  live in their own module rather than inside the code generator, which is
+  what the Mature Module Policy asks for; `rewrite/` has 32 unit tests of its
+  own, one per shape it accepts and one per shape it must refuse. Clippy
+  clean. `scripts/bench_calls.py` was rewritten because it measured the wrong
+  thing — it is now self-checking (`--self-test`).
 - *Docs 5/5*: README, SPEC, ARCHITECTURE, TODO, MEMORY, AGENTS, and
   `bench/RESULTS.md` all present, mutually linked, and doc-sync enforced by
   `cargo test`. The benchmark report is generated, not hand-written, so it
