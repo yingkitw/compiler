@@ -744,14 +744,6 @@ def write_report(
         # exactly what happens to a workload that one compiler rewrites into a
         # loop. Ratios against it are not reported.
         below_noise = ours_compute < overhead_s
-        if below_noise:
-            lines += [
-                "",
-                f"Our compute on this workload is below the {overhead_s * 1000:.0f}ms"
-                " process-spawn cost, so the `compute` column and the ratios"
-                " against it are at the measurement's resolution limit."
-                " Compare the runtimes.",
-            ]
         for r in rows:
             if r.error:
                 lines.append(f"| {r.toolchain} | — | — | — | — | — | ERROR |")
@@ -771,6 +763,14 @@ def write_report(
                 f"{human_size(r.size)} | {r.runtime_best * 1000:.2f}ms | "
                 f"{compute * 1000:.2f}ms | {rel} |"
             )
+        if below_noise:
+            lines += [
+                "",
+                f"Our compute on this workload is below the {overhead_s * 1000:.0f}ms"
+                " process-spawn cost, so the `compute` column and the ratios"
+                " against it are at the measurement's resolution limit."
+                " Compare the runtimes.",
+            ]
         lines.append("")
 
     # Our own `int` versions of two workloads, next to the `number` versions

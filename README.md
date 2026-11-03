@@ -192,11 +192,12 @@ fails if they disagree.
 
 | | compiler | scriptc | compiler v0.1.0 | deno compile | bun --compile | tsrust + node | tsc + node |
 |---|---|---|---|---|---|---|---|
-| **Artifact size** | **33.7 KiB** | 90 KiB | 32.8 KiB | 65.1 MiB | 60.5 MiB | 30 B JS | 16 B JS |
-| **Startup** | **25.4 ms** | 24.6 ms | 22.9 ms | 34.7 ms | 34.4 ms | 154 ms | 151 ms |
-| **Compile time** | **0.19 s** | 0.11 s | 0.17 s | 1.26 s | 1.14 s | 0.40 s | 0.32 s |
-| **fib(35) compute** | 50 ms | **27 ms** | 46 ms | 93 ms | 47 ms | 85 ms | 95 ms |
-| **loop(1e8) compute** | **97 ms** | 107 ms | 100 ms | 99 ms | 101 ms | 99 ms | 96 ms |
+| **Artifact size** | **33.8 KiB** | 109 KiB | 32.9 KiB | 65.1 MiB | 60.5 MiB | 133 B JS | 119 B JS |
+| **Startup** | **23.1 ms** | 24.8 ms | 23.2 ms | 38.7 ms | 32.2 ms | 163 ms | 149 ms |
+| **Compile time** | **0.20 s** | 0.11 s | 0.17 s | 1.03 s | 0.83 s | 0.41 s | 0.36 s |
+| **fib(35) runtime** | **22.6 ms** | 47.8 ms | 69.2 ms | 124 ms | 83 ms | 236 ms | 241 ms |
+| **fib(35) unrewritten** | 67.8 ms | **49.0 ms** | 69.4 ms | 125 ms | 81 ms | 245 ms | 239 ms |
+| **loop(1e8) runtime** | **122 ms** | 124 ms | 128 ms | 133 ms | 135 ms | 261 ms | 246 ms |
 
 Full numbers, methodology, and the raw report: [`bench/RESULTS.md`](bench/RESULTS.md).
 Regenerate with `python3 scripts/bench.py`.
@@ -204,30 +205,46 @@ Regenerate with `python3 scripts/bench.py`.
 The **Startup** row is the one sensitive to the host: spawning a process costs
 ~5 ms on an idle machine and ~20 ms on a busy one, which changes every ratio
 without changing the differences. The committed report was taken with a load
-average of 5.7 and a 20.7 ms spawn floor, so the startup row above is a busy-host
-number; on an idle host it reads about a third of that. The report records the
-load average of the run it came from, so you can tell which numbers to trust.
+average of 11.5 and a 17.3 ms spawn floor, so the startup row above is a
+busy-host number; on an idle host it reads about a third of that. The report
+records the load average of the run it came from, so you can tell which
+numbers to trust.
+
+The two fibonacci rows are the same recursion. In the first, it is written the
+way a programmer writes it and the compiler rewrites the recurrence into a
+loop, so the whole program finishes in the time it takes to start. In the
+second it is written so that no rewrite can fire on it, which is the
+comparison of what the recursion itself costs.
 
 **Where we win.** `deno compile` and `bun build --compile` embed a JavaScript
 engine (V8 / JavaScriptCore) in the binary. We compile to machine code, so
 there is no engine to ship and nothing to initialise at startup — a 33 KiB
 binary instead of 60 MiB, ~2000x smaller, and ~1.4x faster to start.
 
+**A linear recurrence is not exponential.** The fibonacci workload is the
+same program twice: written the way a programmer writes it, and written so
+that no rewrite can fire on it. In the first form our compiler turns the
+recurrence into a loop, and the whole program — 2^35 calls as written —
+finishes in the time it takes to start the process: **22.6 ms against
+scriptc's 47.8 ms**. In the second form, where the recursion survives, the
+gap is the other way round: **67.8 ms against scriptc's 49.0 ms**, because
+scriptc rewrites more shapes than we do.
+
 **Where we lose.** The honest comparison is [`scriptc`](https://scriptc.dev)
-(Vercel Labs), the only other engine-free native TypeScript compiler: it beats
-us on call-heavy code (fib: 27 ms of compute against our 50 ms). Profiling both
-binaries shows this is **not** a difference in the cost of a call — our calls are
-the cheaper of the two (1.48 ns per entry against scriptc's effective 1.05 ns).
-It is a difference in **how many calls are made**: scriptc rewrites a
-self-recursive function into a loop around a single recursive call, which cuts
-the number of function entries by 5.24x. We now do the same for the *chain*
-shape — `f(n) = f(n-1)` is a loop on our side too, so `scripts/bench_shape.py`
-reports no per-entry cost for either compiler — but fib's shape is a *binary*
-recursion, which no tail-call rewrite can touch. Closing that gap means a
-linear-recurrence rewrite, not compiling calls better. Our tight loop already
-ties scriptc, and switching that loop to 64-bit integers makes it 1.4x faster
-while the same change does nothing for recursive calls — the arithmetic was
-never the issue.
+(Vercel Labs), the only other engine-free native TypeScript compiler. On the
+recursion that survives the rewrite it beats us (49 ms against our 68 ms).
+Profiling both binaries shows this is **not** a difference in the cost of a
+call — our calls are the cheaper of the two (1.48 ns per entry against
+scriptc's effective 1.05 ns). It is a difference in **how many calls are
+made**: scriptc rewrites a self-recursive function into a loop around a
+single recursive call, which cuts the number of function entries by 5.24x.
+We now do the same for the *chain* shape (`f(n) = f(n-1)` is a loop on our
+side too) and for a *linear recurrence* (`f(n) = f(n-1) + f(n-2)` is a loop
+with two accumulators), but scriptc recognises more shapes than we do — and
+a shape we do not recognise is left exactly as it was written. Our tight
+loop already ties scriptc, and switching that loop to 64-bit integers makes
+it 1.5x faster while the same change does nothing for recursive calls
+(1.01x) — the arithmetic was never the issue.
 
 **Where nobody wins.** On a tight numeric counting loop, V8 and
 JavaScriptCore are excellent at that shape, and Cranelift's optimiser does
@@ -241,12 +258,11 @@ illustration of what this project is doing differently: we do not emit
 JavaScript at all.
 
 **The `int` type.** `int` (64-bit) keeps arithmetic exact past 2^53 and is
-measurably faster where arithmetic is the work: **1.40x** on an arithmetic-only
+measurably faster where arithmetic is the work: **1.53x** on an arithmetic-only
 loop and **1.94x** when a function call happens per iteration. It does not help
-on recursion (0.83x in the latest run, against 0.98x in an earlier one — the
-difference is the host's load, not the code), which is the evidence that the
-gap to scriptc is not about arithmetic. It is not a cross-toolchain comparison —
-the JavaScript toolchains have no integer type.
+on recursion (1.01x on the unrewritten fibonacci), which is the evidence that
+the gap to scriptc is not about arithmetic. It is not a cross-toolchain
+comparison — the JavaScript toolchains have no integer type.
 
 ## Testing
 

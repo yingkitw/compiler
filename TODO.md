@@ -88,6 +88,12 @@
       wrong (it is `2*F(d+1)-1`), and duly reported 0.04 ns/call
 
 ### Quality
+- [x] **The three biggest modules are directories** — `parser/` (693 lines),
+      `rewrite/` (1459) and `codegen/` (1375) were single files; they are now
+      split along the seams they already had, and no file is over about 450
+      lines. The split was a *move*, verified by the test suite — the object
+      files it produces are byte-for-byte identical to the ones the single
+      files produced
 - [x] **113 inline unit tests + 29 integration tests** — all passing; `cargo clippy
       --all-targets` exits 0; doc-sync enforced by `tests/docs_sync.rs`
 - [x] **Inline unit tests for the lexer, parser, and type rules** — 12 lexer tests
