@@ -174,6 +174,11 @@
       green; `cargo package --list` reviewed (no local-only files shipped);
       the earlier `tsc-rs` v0.1.0 publish was yanked (names are permanent, so a
       rename means a new crate)
+- [x] **Published as `compiler` v0.3.0** — the tail-call rewrite, the
+      recurrence rewrite, the module split, the depth limits, the audit fixes,
+      and the new gates. Dry run green, `cargo package --list` reviewed, the
+      poisoned build fingerprint cleaned and the release binary verified
+      (its symbols present) before the upload
 
 ## Next
 
