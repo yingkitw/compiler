@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{compile_and_run, compile_example, compile_fails, out_dir};
+use common::{compile_and_run, compile_example, compile_fails, out_dir, run_source};
 
 use std::process::Command;
 
@@ -128,7 +128,7 @@ fn a_tail_recursion_can_be_much_deeper_than_the_stack() {
     let src = out_dir().join("very_deep_tail_recursion.ts");
     std::fs::write(
         &src,
-        "function f(n: number): number {\n\
+        "function f(n: int): int {\n\
          \x20   if (n < 1) { return 0; }\n\
          \x20   return f(n - 1) + 1;\n\
          }\n\
@@ -240,4 +240,72 @@ fn wrong_arg_count_rejected() {
         "function f(a: number): void {}\nf(1, 2);",
         "'f' takes 1 arguments, got 2",
     );
+}
+
+#[test]
+fn negative_int_literals_are_ints() {
+    // A negative literal is a unary minus over a literal, and it has to
+    // adopt the context's type the way a positive one does — including
+    // i64::MIN, whose positive form does not fit in an i64.
+    let source = "let a: int = -5;\n\
+                  print(a);\n\
+                  let b: int = -9223372036854775808;\n\
+                  print(b);\n\
+                  function f(): int { return -7; }\n\
+                  print(f());\n";
+    assert_eq!(run_source("neg_int", source), "-5\n-9223372036854775808\n-7\n");
+}
+
+#[test]
+fn an_int_division_by_zero_is_reported() {
+    // The hardware traps on a zero divisor; the runtime turns that into a
+    // diagnostic and a non-zero exit status, the same way it does for a
+    // stack overflow. Output printed before the fault is preserved.
+    let source = "print(1);\n\
+                  let a: int = 1;\n\
+                  let b: int = 0;\n\
+                  print(a / b);\n\
+                  print(2);\n";
+    let src = out_dir().join("int_div_zero.ts");
+    std::fs::write(&src, source).unwrap();
+    let bin = out_dir().join("int_div_zero");
+    let status = Command::new(env!("CARGO_BIN_EXE_tsc"))
+        .arg(&src)
+        .arg("-o")
+        .arg(&bin)
+        .status()
+        .expect("failed to run tsc");
+    assert!(status.success(), "compilation failed");
+
+    let out = Command::new(&bin).output().expect("failed to run binary");
+    assert_eq!(out.status.code(), Some(1), "expected a clean exit 1");
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "1\n");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("integer division by zero"),
+        "unexpected stderr: {stderr:?}"
+    );
+}
+
+#[test]
+fn void_is_not_a_variable_or_parameter_type() {
+    compile_fails(
+        "let x: void;",
+        "a variable or a parameter cannot have type 'void'",
+    );
+    compile_fails(
+        "function f(x: void): void {}",
+        "a variable or a parameter cannot have type 'void'",
+    );
+}
+
+#[test]
+fn deeply_nested_programs_are_rejected_not_crashed() {
+    // Every stage recurses over the AST, and before the depth limits a
+    // program like these died with a stack overflow instead of a diagnostic.
+    let parens = format!("print({}1{});", "(".repeat(100_000), ")".repeat(100_000));
+    compile_fails(&parens, "nested too deeply");
+
+    let sum = format!("print({});", ["1"].repeat(200_000).join(" + "));
+    compile_fails(&sum, "nested too deeply");
 }

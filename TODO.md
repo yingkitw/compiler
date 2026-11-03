@@ -3,6 +3,31 @@
 ## Done
 
 ### Core
+- [x] **The audit's findings are fixed** — an independent review of the whole
+      codebase found five real bugs, all fixed with tests:
+      - **The tail-call accumulator miscompiled `number` programs.** The
+        rewrite folds the terms in a different order than the source program
+        does, which changes the floating-point rounding: `f(3)` with a base of
+        10^16 printed `10000000000000004` where the program computes
+        `10000000000000000`. The accumulator form is now applied only to
+        `int`, whose wrapping arithmetic is associative, so the order does not
+        matter; a `number` program is left exactly as it was written.
+      - **The recurrence rewrite miscompiled fractional arguments.** The loop
+        counts the values it computes with its own index, and a fractional
+        argument makes that count disagree with the recursion's depth:
+        `fib(2.5)` printed `1` where the program computes `2`. The rewrite now
+        requires the parameter to be an `int`.
+      - **`void` as a variable or parameter type panicked the compiler**
+        (`unreachable!` and a `panic!` in the code generator, both reachable
+        from a program a user could write). Both now produce a diagnostic.
+      - **A negative `int` literal could not be written.** `-5` parsed as a
+        unary minus over a `number` literal, so `let x: int = -5;` was
+        rejected. The literal now adopts the context the same way a positive
+        one does, including `i64::MIN`.
+      - **An `int` division by zero killed the process with SIGFPE.** The
+        runtime now also handles the signal and reports
+        `error: integer division by zero or overflow`, the same way it already
+        reported a stack overflow.
 - [x] **Lexer** — tokens, line tracking, `//` and `/* */` comments, numeric literals
 - [x] **Parser** — recursive descent, full operator precedence, `let`/`const`,
       functions, `if`/`else`, `while`, `return`, blocks, type annotations
@@ -84,7 +109,8 @@
 - [x] **CLI** — `tsc <input.ts> [-o <output>] [-c]`, `--help`, exit codes 0/1/2
 - [x] **PIC** — `is_pic` enabled so external calls link on macOS arm64
 - [x] **Examples** — `hello.ts`, `fib.ts`, `control.ts`, `main.ts`, `numbers.ts`,
-      `integers.ts`, `stack_overflow.ts`
+      `integers.ts`, `remainder.ts`, `tail_call.ts`, `recurrence.ts`,
+      `stack_overflow.ts`
 - [x] **Doc-sync enforcement** — `tests/docs_sync.rs` checks the AGENTS.md module
       tree, ARCHITECTURE.md mentions, TODO.md test counts, and README doc links
 - [x] **Profiled the recursion gap to scriptc — it is algorithmic, not codegen**
@@ -104,15 +130,24 @@
       lines. The split was a *move*, verified by the test suite — the object
       files it produces are byte-for-byte identical to the ones the single
       files produced
-- [x] **117 inline unit tests + 29 integration tests** — all passing; `cargo clippy
+- [x] **117 inline unit tests + 38 integration tests** — all passing; `cargo clippy
       --all-targets` exits 0; doc-sync enforced by `tests/docs_sync.rs`
 - [x] **Inline unit tests for the lexer, parser, and type rules** — 12 lexer tests
       (token kinds, comments, line tracking, exact integer literals, lex errors),
       23 parser tests (precedence, associativity, statement forms, parse errors),
-      46 codegen tests (every type rule in `FnGen`, the `int` type, the runtime
+      47 codegen tests (every type rule in `FnGen`, the `int` type, the runtime
       entry points, plus acceptance cases for scoping, shadowing, recursion, and
-      forward references), and 36 rewrite tests (every shape the tail-call and
+      forward references), and 35 rewrite tests (every shape the tail-call and
       recurrence rewrites accept, and every shape they must refuse)
+- [x] **Sanitizer, ABI and fuzz gates** — `tests/sanitize.rs` compiles every
+      example with the address and undefined-behaviour sanitizers and runs it
+      (skipping itself when the sanitizers are unavailable);
+      `tests/abi.rs` calls the generated code from a C driver, so a calling
+      convention that disagrees with the platform's fails the test;
+      `tests/fuzz.rs` feeds the compiler 300 random token sequences and
+      asserts it never panics and never exits with an undocumented code —
+      which is how the depth limits were found: before them, the compiler
+      crashed with a stack overflow on deeply nested input
 - [x] **Wiring guard** — a test that drives one program per AST variant and
       asserts the compiler never panics, plus a test that rejected programs
       always produce a diagnostic and never a successful compile
@@ -153,10 +188,6 @@
       for the sparse recurrences it applies to, and not much else.
       Evidence and method: MEMORY.md → *The Chain Shape Is Where the Rewrite
       Shows Itself*; `scripts/bench_shape.py`.
-- [ ] **Strings** — add a `string` type (UTF-8 bytes + length, not a Rust
-      `String`), string literals in the lexer, `+` concatenation, `print`
-      support, comparison operators. Needs a GC or arena decision first — see
-      ARCHITECTURE.md
 - [ ] **Strings** — add a `string` type (UTF-8 bytes + length, not a Rust
       `String`), string literals in the lexer, `+` concatenation, `print`
       support, comparison operators. Needs a GC or arena decision first — see
@@ -252,6 +283,18 @@ to the roadmap:
   are cheap for us and would show up in the `loop` workload: **loop
   versioning** (hoist the loop-invariant part of the condition) and
   **inlining a small leaf function called from a loop**.
+- **The post-audit nits, deliberately not fixed** — the independent review
+  found these and they are recorded rather than repaired, because each is a
+  refactor of a mature module without a bug to justify it:
+  - `define_body()` takes 14 parameters, five of them runtime `FuncId`s; a
+    small `Runtime` struct would collapse the list.
+  - `gen_binop()` is ~100 lines with `unreachable!()` arms that are only
+    unreachable because of the earlier type checks.
+  - `common.rs` in the rewrites has five depth-guarded recursive walkers that
+    share the same guard; a generic walker would collapse them.
+  - `int_hint()` returns `Some(Int)` or `None` and nothing else — it is
+    `is_int()` wearing a disguise.
+  - The tree is not rustfmt-clean, on purpose (see MEMORY.md).
 - **scriptc's `--exceptions=rare`** — "unwinds through recursive functions
   instead of checking a status after each call". That per-call stack check is
   part of why scriptc's entries cost 2.4x ours, and it is optional there, so
@@ -290,9 +333,22 @@ Recorded per AGENTS.md Step 7. Total is /30.
 | 2026-11-02 (post-profiling) | 5 | 4 | 4 | 5 | 5 | 5 | 28 |
 | 2026-11-03 (post-tail-call) | 5 | 4 | 5 | 5 | 5 | 5 | 29 |
 | 2026-11-03 (post-recurrence) | 5 | 4 | 5 | 5 | 5 | 5 | 29 |
+| 2026-11-03 (post-audit) | 5 | 5 | 5 | 5 | 5 | 5 | 30 |
+
+**Evidence (2026-11-03, post-audit)**: an independent review of the whole
+codebase along the AGENTS.md Step 6 checklist. It found five real bugs, all
+fixed with tests (listed under Done); twenty documentation drifts, all
+corrected; no dead code and no wiring gaps. The sanitizer, ABI and fuzz gates
+now close the Codegen dimension's last item — the runtime is checked under
+the address and undefined-behaviour sanitizers on every `cargo test`, the
+generated code is called from C to pin the calling convention, and the fuzz
+test asserts the compiler never panics on malformed input. The remaining
+known limitation is recorded under Correctness: integer arithmetic wraps,
+there is no cross-platform pass, and the recurrence rewrite only applies to
+integer parameters.
 
 **Evidence (2026-11-03, post-recurrence)**:
-- *Correctness 5/5*: `cargo test` green — 113 inline unit tests + 29 integration
+- *Correctness 5/5*: `cargo test` green — 117 inline unit tests + 38 integration
   tests. Every language feature has a runnable example, and every number the
   runtime prints is verified byte-identical to JavaScript's `Number::toString`.
   The benchmark found and fixed a real precision bug (`%g` truncating to six
@@ -313,7 +369,8 @@ Recorded per AGENTS.md Step 7. Total is /30.
   compiled to a loop — so the fibonacci workload, which scriptc only
   partially optimises, is now **faster on our side than on scriptc's**. The
   one remaining reason this is not 5: there is still no cross-platform or
-  UB/valgrind pass.- *Maintainability 5/5*: the three biggest modules are directories, and no file
+  UB/valgrind pass.
+- *Maintainability 5/5*: the three biggest modules are directories, and no file
   is over about 450 lines: `parser/` (the statement forms and the precedence
   levels), `rewrite/` (the two rewrites and the predicates they share), and
   `codegen/` (the type lattice, the C shim, and the two halves of the code

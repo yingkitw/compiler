@@ -13,20 +13,20 @@ print(lastDigit(1000003));   // 3
 // The same shape with an accumulator: the call's result is combined with
 // something, and the combination is carried along the loop instead of being
 // left on the stack.
-function sumTo(n: number): number {
+function sumTo(n: int): int {
     if (n < 1) { return 0; }
     return sumTo(n - 1) + n;
 }
 print(sumTo(1000000));   // 500000500000
 
 // Subtraction and multiplication accumulate too.
-function minusTo(n: number): number {
+function minusTo(n: int): int {
     if (n < 1) { return 100; }
     return minusTo(n - 1) - n;
 }
 print(minusTo(5));   // 85
 
-function timesTo(n: number): number {
+function timesTo(n: int): int {
     if (n < 1) { return 1; }
     return timesTo(n - 1) * 3;
 }
@@ -34,7 +34,12 @@ print(timesTo(4));   // 81
 
 // The accumulator can be a parameter instead: it is stepped along with the
 // recursion, one level at a time.
-function countBy(n: number, step: number): number {
+//
+// The accumulator forms above are written with `int`, and that is not an
+// accident: the rewrite folds the terms in a different order than the
+// source program does, which is exact for integers and not for floating
+// point. A `number` program is left exactly as it was written.
+function countBy(n: int, step: int): int {
     if (n < 1) { return step; }
     return countBy(n - 1, step + 2);
 }

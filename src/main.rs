@@ -11,6 +11,13 @@ mod rewrite;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+/// The stack the compiler gets.
+///
+/// Every stage walks the AST recursively, and the limits in `ast.rs` decide
+/// how deep that may go. The stack is sized so that reaching the limit is
+/// the compiler's decision rather than the operating system's.
+const COMPILER_STACK_SIZE: usize = 64 * 1024 * 1024;
+
 fn main() -> ExitCode {
     let mut input: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
@@ -79,7 +86,15 @@ fn run(input: &Path, output: Option<PathBuf>, compile_only: bool) -> Result<Path
     // a self-recursive call in tail position becomes a loop, and a linear
     // recurrence becomes a loop as well.
     rewrite::optimise(&mut prog);
-    let obj = codegen::compile(&prog)?;
+    // The compiler recurses over the AST, so it runs on a thread with a large
+    // stack: a program with a very long expression should get a diagnostic,
+    // not a stack overflow.
+    let obj = std::thread::Builder::new()
+        .stack_size(COMPILER_STACK_SIZE)
+        .spawn(move || codegen::compile(&prog))
+        .map_err(|e| format!("cannot start the compiler thread: {}", e))?
+        .join()
+        .map_err(|_| "the compiler thread panicked".to_string())??;
 
     let stem = input.with_extension("");
     if compile_only {
@@ -97,7 +112,15 @@ fn run(input: &Path, output: Option<PathBuf>, compile_only: bool) -> Result<Path
     std::fs::write(&obj_path, obj).map_err(|e| e.to_string())?;
     std::fs::write(&rt_path, codegen::RUNTIME_C).map_err(|e| e.to_string())?;
 
-    let status = std::process::Command::new("cc")
+    // `CC` and `CFLAGS` are the conventional way to choose the C compiler and
+    // its flags — every build tool honours them, and they are what makes the
+    // sanitizers reachable from a test.
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+    let mut cmd = std::process::Command::new(&cc);
+    if let Ok(flags) = std::env::var("CFLAGS") {
+        cmd.args(flags.split_whitespace());
+    }
+    let status = cmd
         .arg(&obj_path)
         .arg(&rt_path)
         // The runtime uses libm's `fmod` for the float remainder. On macOS

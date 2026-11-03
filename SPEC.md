@@ -14,7 +14,17 @@ tsc <input.ts> [-o <output>] [-c]
 | `<input.ts>` | Source file to compile (required, exactly one) |
 | `-o`, `--output <path>` | Output path. Default: input path with its extension replaced |
 | `-c`, `--compile-only` | Emit an object file only, do not link. Default output: `<stem>.o` |
+| `-V`, `--version` | Print the compiler's name and version and exit 0 |
 | `-h`, `--help` | Print usage and exit 0 |
+
+**Environment**
+
+- `CC` chooses the C compiler used at link time (default: `cc`).
+- `CFLAGS` supplies extra flags for that compiler, split on whitespace.
+
+Both are the conventional ones, and they are what makes the sanitizers
+reachable: `CC=clang CFLAGS="-fsanitize=address,undefined"` links the
+runtime with the sanitizers.
 
 **Behaviour**
 - Success: prints the output path to stdout, exits `0`.
@@ -24,8 +34,8 @@ tsc <input.ts> [-o <output>] [-c]
   exits `2`.
 
 **Requirements**
-- A C compiler must be available on `PATH` as `cc` (linking only; `-c` does not
-  need one).
+- A C compiler must be available on `PATH` — `cc` by default, or whatever
+  `CC` names (linking only; `-c` does not need one).
 - The compiler targets the host platform (`Triple::host()`).
 
 ## Language
@@ -35,9 +45,9 @@ tsc <input.ts> [-o <output>] [-c]
 | Type | Representation | Notes |
 |---|---|---|
 | `number` | IEEE-754 double (`f64`) | The default type of a numeric literal |
-| `int` | 64-bit signed integer (`i64`) | Exact arithmetic; integer division truncates toward zero |
+| `int` | 64-bit signed integer (`i64`) | Integer division truncates toward zero; arithmetic wraps (there is no overflow check); division by zero or overflow reports `error: integer division by zero or overflow` and exits 1 |
 | `boolean` | 8-bit integer (`i8`), 0 = false, 1 = true | |
-| `void` | no value | Return type of a function with no value |
+| `void` | no value | The return type of a function with no value; not allowed as a variable or parameter type |
 
 A type annotation is optional where the type can be inferred from the
 initializer. Annotations are mandatory for parameters.
@@ -51,7 +61,7 @@ initializer. Annotations are mandatory for parameters.
   nest).
 - **Keywords**: `let`, `const`, `function`, `if`, `else`, `while`, `return`,
   `true`, `false`.
-- **Reserved for future use**: `number`, `boolean`, `void` are recognised only in
+- **Reserved for future use**: `number`, `int`, `boolean`, `void` are recognised only in
   type-annotation position.
 
 ### Grammar
@@ -188,10 +198,17 @@ narrow. It fires only when
 - the recursive call is the last statement of the body, and every argument is
   a parameter plus or minus an integer constant, with the first parameter's
   step downwards;
-- an accumulator term (`return f(n - 1) + x;`) has no side effects, since the
-  rewrite evaluates it in the opposite order;
+- an accumulator term (`return f(n - 1) + x;`) has no side effects and the
+  function returns an `int` — see below;
 - the statements that run on every level of a void tail call (`f(n - 1);` in a
   `void` function) neither call the function again nor assign.
+
+An accumulator changes the *order* the terms are combined in: the source
+program folds them from the innermost level outwards, and the loop folds them
+the other way. That is exact for `int`, whose wrapping arithmetic is
+associative, but not for `number`, whose floating-point addition is not — so
+a function returning `number` is left exactly as it was written, and only a
+pure tail call (`return f(n - 1);`, with no accumulator) is rewritten for it.
 
 Anything else is compiled exactly as written.
 
@@ -231,8 +248,8 @@ performs the same additions, in the same order, as the recursion does.
 
 The rewrite fires only when
 
-- the function returns a `number` or an `int`, and its first parameter is a
-  number,
+- the function returns a `number` or an `int`, and its first parameter is an
+  `int`,
 - the base case is the first statement of the body, with the same rules as
   the tail-call rewrite,
 - the base expression has no side effects. The source program evaluates it
@@ -243,9 +260,12 @@ The rewrite fires only when
   and whose every other part is free of side effects, and
 - every other argument of those calls is a parameter passed on unchanged.
 
-The loop keeps as many values as the widest offset needs, so a recurrence
-with a gap (`f(n - 1) + f(n - 3)`) is rewritten too, as is one with a third
-term (`f(n - 1) + f(n - 2) + 1`) or a coefficient (`2 * f(n - 1)`). The
+The `int` parameter is a soundness requirement, not a style choice: the loop
+counts the values it computes with its own index, and a fractional argument
+would make the loop's count and the recursion's depth disagree. The loop
+keeps as many values as the widest offset needs, so a recurrence with a gap
+(`f(n - 1) + f(n - 3)`) is rewritten too, as is one with a third term
+(`f(n - 1) + f(n - 2) + 1`) or a coefficient (`2 * f(n - 1)`). The
 expression's shape is preserved exactly, so the answer is the same, bit for
 bit.
 
@@ -290,16 +310,25 @@ let d = 1 + a;        // likewise, and the literal is evaluated after `a`
 ```
 
 A literal used as an `int` must be integral and within the `i64` range;
-`let x: int = 4.5` is an error. A `number` variable is never implicitly
-narrowed to an `int` — that would require an explicit conversion, which the
-language does not yet have.
+`let x: int = 4.5` is an error. A negative literal adopts the context the same
+way a positive one does: `let x: int = -5` is an `int`. A `number` variable is
+never implicitly narrowed to an `int` — that would require an explicit
+conversion, which the language does not yet have.
 
 ### Diagnostics
 
-All diagnostics are single-line messages prefixed with the source line:
+Lexer and parser diagnostics are single-line messages prefixed with the
+source line:
 
 ```
 line 3: expected ';', found Ident("x")
+```
+
+Diagnostics produced after parsing — the type errors and the code
+generator's depth limit — are a single line without a prefix:
+
+```
+cannot assign boolean to 'x: number'
 ```
 
 Errors are reported for: unknown types, type mismatches on initialization and
@@ -307,7 +336,9 @@ assignment, arithmetic or relational type errors, comparing mismatched types,
 using a void value where a value is required, assigning to a `const`, undefined
 variables, undefined functions, wrong argument counts, wrong argument types,
 functions that don't return on all paths, nested function declarations,
-`print` of a void value, and redefining `print` or `main` incorrectly.
+`print` of a void value, `void` used as a variable or parameter type,
+expressions nested deeper than the compiler's limit, and redefining `print` or
+`main` incorrectly.
 
 ## Runtime ABI
 
@@ -322,17 +353,24 @@ void ts_runtime_init(void);
 double ts_fmod(double x, double y);
 ```
 
-`ts_runtime_init` is called first by the generated C `main`. It installs a
-`SIGSEGV` handler on an alternate signal stack, so that unbounded recursion
-exhausting the stack is reported as
+`ts_runtime_init` is called first by the generated C `main`. It installs
+handlers on an alternate signal stack: a `SIGSEGV` handler, so that unbounded
+recursion exhausting the stack is reported as
 
 ```
 error: maximum recursion depth exceeded
 ```
 
-on stderr with exit status 1, instead of killing the process. Output printed
-before the overflow is preserved. The language has no pointers, so the only
-way a compiled program can fault is by running out of stack.
+and a `SIGFPE`/`SIGILL` handler, so that an integer division by zero — or
+`i64::MIN / -1`, which the hardware also refuses — is reported as
+
+```
+error: integer division by zero or overflow
+```
+
+both on stderr with exit status 1, instead of killing the process. Output
+printed before either is preserved. The language has no pointers, so the only
+fault a compiled program can take besides those is a hardware one.
 
 These are imported by the generated code under `Linkage::Import`. `double` maps
 to Cranelift's `F64`, `signed char` to `I8`, and `long long` to `I64`, so the

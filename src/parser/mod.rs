@@ -4,7 +4,12 @@ use crate::ast::*;
 use crate::lexer::{Tok, Token};
 
 pub fn parse(toks: Vec<Token>) -> Result<Program, String> {
-    let mut p = Parser { toks, pos: 0 };
+    let mut p = Parser {
+        toks,
+        pos: 0,
+        nesting: 0,
+        depth: 0,
+    };
     let mut stmts = Vec::new();
     while *p.peek() != Tok::Eof {
         stmts.push(p.stmt()?);
@@ -15,9 +20,56 @@ pub fn parse(toks: Vec<Token>) -> Result<Program, String> {
 struct Parser {
     toks: Vec<Token>,
     pos: usize,
+    /// How deeply the expression or statement being parsed is nested. This
+    /// is the parser's own recursion depth: parentheses nest the parse
+    /// without nesting the tree.
+    nesting: usize,
+    /// How deep the expression tree being built is.
+    ///
+    /// The tree grows without the parser recursing: `a + b + c + ...` is
+    /// built left-associated, so each term makes the tree one level deeper.
+    /// Every stage that walks the tree — the rewrites, the code generator,
+    /// and the tree's own destructor — recurses over it, so its depth has to
+    /// be bounded.
+    depth: usize,
 }
 
 impl Parser {
+    /// Enter a nested expression or statement.
+    ///
+    /// The parser recurses, so a program with a hundred thousand nested
+    /// parentheses would take the compiler down with it. The limit turns
+    /// that into a diagnostic.
+    fn enter(&mut self) -> Result<(), String> {
+        self.nesting += 1;
+        if self.nesting > MAX_DEPTH {
+            return Err("expression or statement nested too deeply".to_string());
+        }
+        Ok(())
+    }
+
+    /// Leave a nested expression or statement.
+    fn leave(&mut self) {
+        self.nesting -= 1;
+    }
+
+    /// Grow the expression tree by one level.
+    ///
+    /// The level stays: the tree keeps it, and the stages that walk the tree
+    /// recurse through it.
+    fn deepen(&mut self) -> Result<(), String> {
+        self.depth += 1;
+        if self.depth > MAX_AST_DEPTH {
+            return Err("expression nested too deeply".to_string());
+        }
+        Ok(())
+    }
+
+    /// Start a new expression, at the top level of the tree.
+    fn reset_depth(&mut self) {
+        self.depth = 0;
+    }
+
     fn peek(&self) -> &Tok {
         &self.toks[self.pos].tok
     }

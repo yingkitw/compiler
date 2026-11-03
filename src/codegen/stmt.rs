@@ -31,6 +31,17 @@ impl<'a> FnGen<'a> {
     }
 
     pub(super) fn gen_stmt(&mut self, s: &Stmt) -> Result<bool, String> {
+        self.depth += 1;
+        if self.depth > MAX_AST_DEPTH {
+            self.depth -= 1;
+            return Err("expression or statement nested too deeply".to_string());
+        }
+        let result = self.gen_stmt_inner(s);
+        self.depth -= 1;
+        result
+    }
+
+    fn gen_stmt_inner(&mut self, s: &Stmt) -> Result<bool, String> {
         match s {
             Stmt::Let { name, ty, init, mutable } => {
                 let (v, t) = match (ty, init) {

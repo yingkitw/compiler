@@ -138,9 +138,16 @@ fn rewrite_func(name: &str, params: &[(String, Type)], ret: Option<Type>, body: 
     // The accumulator's type is the function's return type. A function that
     // returns something other than a number cannot carry an arithmetic
     // accumulator, so the rewrite does not apply to it.
+    //
+    // An accumulator also changes the *order* the terms are added in: the
+    // source program folds them from the innermost level outwards, and the
+    // loop folds them the other way. That is exact for `int`, whose
+    // wrapping arithmetic is associative, but not for `number`, whose
+    // floating-point addition is not — so the accumulator form is only
+    // applied to integers.
     let acc_type = match (&call.acc, ret) {
         (None, _) => None,
-        (Some(_), Some(t @ (Type::Int | Type::Number))) => Some(t),
+        (Some(_), Some(Type::Int)) => Some(Type::Int),
         (Some(_), _) => return,
     };
 

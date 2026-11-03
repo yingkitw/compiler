@@ -41,7 +41,7 @@ design is the way it is.
 No cycles, no back-references.
 
 **The three biggest modules are directories**, each split so that no file is
-much over 400 lines:
+over about 450 lines:
 
 | Module | Files | What is in them |
 |---|---|---|
@@ -51,7 +51,12 @@ much over 400 lines:
 
 ### `main.rs` — CLI entry point
 - Parses arguments by hand: `-o` / `--output`, `-c` / `--compile-only`,
-  `-h` / `--help`.
+  `-V` / `--version`, `-h` / `--help`.
+- Honours the conventional `CC` and `CFLAGS` environment variables for the
+  link step.
+- Runs the compilation on a thread with a 64 MiB stack: every stage recurses
+  over the AST, and the depth limits decide how deep that may go — the limits
+  should be what fires, not the operating system.
 - Reads the source file, then drives the pipeline: `lexer::lex` → `parser::parse`
   → `codegen::compile`.
 - On success with linking: writes the object and the embedded C runtime to a
@@ -63,15 +68,18 @@ much over 400 lines:
 
 ### `lexer.rs` — tokenizer
 - `lex(src: &str) -> Result<Vec<Token>, String>`.
-- `Tok` is a flat enum of keywords, `Ident(String)`, `Num(f64)` and punctuation.
+- `Tok` is a flat enum of keywords, `Ident(String)`, `Num(NumLit)` and
+  punctuation. A `NumLit` keeps the literal's exact `i64` value alongside its
+  `f64`, because a literal such as 2^53 + 1 does not survive the round trip
+  through a double.
 - `Token { tok, line }` carries the source line on every token so parser
   diagnostics can point at a line.
 - Handles `//` and `/* */` comments, whitespace, and numeric literals.
 - Knows nothing about types or grammar — it only classifies characters.
 
 ### `ast.rs` — shared data types
-- `Type` (`Number` | `Boolean` | `Void`), `BinOp`, `UnOp`, `Expr`, `Stmt`,
-  `Program`.
+- `Type` (`Number` | `Int` | `Boolean` | `Void`), `BinOp`, `UnOp`, `Expr`,
+  `Stmt`, `Program`, and the depth limits the walking stages share.
 - Deliberately has no behaviour and no dependencies: it is the contract between
   the parser and the codegen.
 - Because both sides pattern-match on these types, **adding a variant requires
@@ -84,9 +92,11 @@ much over 400 lines:
   `return_stmt`, `block`, expression statements); `expr.rs` one method per
   precedence level (`logic_or`, `logic_and`, `equality`, `comparison`, `term`,
   `factor`, `unary`, `call`, `primary`), plus `assignment` at the top.
-- The parser performs only *syntactic* checks plus two well-formedness rules:
-  a `let` needs a type or an initializer, and `main` must have the right shape.
-  All type checking happens later.
+- The parser performs only *syntactic* checks plus three well-formedness rules:
+  a `let` needs a type or an initializer, a variable or parameter cannot have
+  type `void`, and an expression or statement may not nest deeper than
+  `MAX_DEPTH`. The `main` shape is checked by the code generator, and all type
+  checking happens there too.
 
 ### `rewrite/` — source-to-source optimisations
 - `optimise(prog: &mut Program)` runs every rewrite over the program:
@@ -306,7 +316,7 @@ see is self-recursive, in tail position, with a decreasing argument.
 
 ### The three biggest modules are directories
 **Decision**: `parser/`, `rewrite/` and `codegen/` are directories of files
-rather than single files, and no file is much over 400 lines.
+rather than single files, and no file is over about 450 lines.
 **Why**: a 1,400-line file is hard to read, hard to review, and hard to
 change safely. The split is along the seams the modules already had — the
 statement forms and the precedence levels in the parser, the two rewrites,
@@ -317,6 +327,21 @@ methods that cross a file boundary need `pub(super)`, and the tests move into
 their own file. The Mature Module Policy applies here too: `codegen/` was
 covered by 46 unit tests before the split, and the split is a *move*, so the
 tests are what proves it changed nothing.
+
+### Depth limits instead of a stack overflow
+**Decision**: the parser bounds how deeply expressions and statements may
+nest (`MAX_DEPTH`), the stages that walk the tree bound how deep the tree
+itself may be (`MAX_AST_DEPTH`), and the compilation runs on a thread with a
+64 MiB stack.
+**Why**: every stage recurses over the AST, and a program with a hundred
+thousand nested parentheses — or a long sum, which the parser builds
+left-associated — would take the compiler down with a stack overflow. A
+diagnostic ("expression or statement nested too deeply") is the honest
+answer.
+**Trade-off**: a program whose expressions really are deeper than the limit
+is rejected rather than compiled. The limits are far beyond what a person
+writes, and the 64 MiB stack means reaching the limit is the compiler's
+decision rather than the operating system's.
 
 ### Tail-call elimination is narrow on purpose
 **Decision**: the rewrite fires only on a shape it can recognise exactly — a
@@ -375,14 +400,16 @@ unconditionally is simpler than detecting the platform.
 **Trade-off**: a small performance cost on targets where it is not strictly
 required.
 
-### `number` is always `f64`
-**Decision**: one numeric type, no separate integer type.
-**Why**: it keeps the type lattice at three types, avoids implicit numeric
-conversions in the checker, and matches the "small typed core" scope of the
-project.
-**Trade-off**: integer arithmetic is exact only up to 2^53, and there is no
-integer division or bitwise operation. Adding an `int` type is in the TODO
-backlog.
+### Two numeric types: `number` and `int`
+**Decision**: `number` is an IEEE-754 double and `int` is a 64-bit signed
+integer, with no implicit conversion between them.
+**Why**: JavaScript's `number` cannot represent every integer beyond 2^53, and
+a compiler that emits native code can do better. The two types are distinct in
+the checker, so nothing is silently widened or narrowed.
+**Trade-off**: every operator has to type-check both combinations, and a
+`number`/`int` boundary in a program is a compile error the programmer has to
+resolve. Integer arithmetic wraps — there is no overflow check — and integer
+division by zero is a runtime error reported by the runtime's signal handler.
 
 ### `&&` and `||` are implemented with basic blocks
 **Decision**: short-circuit evaluation uses three blocks and a dedicated SSA

@@ -17,10 +17,22 @@ pub(crate) fn is_literal(expr: &Expr) -> bool {
 /// Is the expression free of side effects? Only reading a variable and
 /// arithmetic on such reads qualify.
 pub(crate) fn is_pure(expr: &Expr) -> bool {
+    is_pure_at(expr, 0)
+}
+
+/// The recursive form of `is_pure`, with the depth of the expression so far.
+///
+/// An expression that is nested deeper than the limit is not pure as far as
+/// the rewrite is concerned: the rewrite simply leaves the program alone,
+/// and the code generator reports the depth.
+pub(crate) fn is_pure_at(expr: &Expr, depth: usize) -> bool {
+    if depth > MAX_AST_DEPTH {
+        return false;
+    }
     match expr {
         Expr::Num(_) | Expr::Bool(_) | Expr::Var(_) => true,
-        Expr::Bin { lhs, rhs, .. } => is_pure(lhs) && is_pure(rhs),
-        Expr::Un { expr, .. } => is_pure(expr),
+        Expr::Bin { lhs, rhs, .. } => is_pure_at(lhs, depth + 1) && is_pure_at(rhs, depth + 1),
+        Expr::Un { expr, .. } => is_pure_at(expr, depth + 1),
         Expr::Call { .. } => false,
         Expr::Assign { .. } => false,
     }
@@ -28,35 +40,70 @@ pub(crate) fn is_pure(expr: &Expr) -> bool {
 
 /// Does the expression assign to anything?
 pub(crate) fn contains_assign(expr: &Expr) -> bool {
+    contains_assign_at(expr, 0)
+}
+
+/// The recursive form of `contains_assign`, with the depth so far.
+pub(crate) fn contains_assign_at(expr: &Expr, depth: usize) -> bool {
+    if depth > MAX_AST_DEPTH {
+        // Too deep to look at: assume it does assign, so the rewrite leaves
+        // the program alone.
+        return true;
+    }
     match expr {
         Expr::Num(_) | Expr::Bool(_) | Expr::Var(_) => false,
-        Expr::Bin { lhs, rhs, .. } => contains_assign(lhs) || contains_assign(rhs),
-        Expr::Un { expr, .. } => contains_assign(expr),
-        Expr::Call { args, .. } => args.iter().any(contains_assign),
+        Expr::Bin { lhs, rhs, .. } => {
+            contains_assign_at(lhs, depth + 1) || contains_assign_at(rhs, depth + 1)
+        }
+        Expr::Un { expr, .. } => contains_assign_at(expr, depth + 1),
+        Expr::Call { args, .. } => args.iter().any(|a| contains_assign_at(a, depth + 1)),
         Expr::Assign { .. } => true,
     }
 }
 
 /// Does the expression call the named function, directly or indirectly?
 pub(crate) fn contains_call_to(expr: &Expr, name: &str) -> bool {
+    contains_call_to_at(expr, name, 0)
+}
+
+/// The recursive form of `contains_call_to`, with the depth so far.
+pub(crate) fn contains_call_to_at(expr: &Expr, name: &str, depth: usize) -> bool {
+    if depth > MAX_AST_DEPTH {
+        // Too deep to look at: assume it calls the function, so the rewrite
+        // leaves the program alone.
+        return true;
+    }
     match expr {
         Expr::Num(_) | Expr::Bool(_) | Expr::Var(_) => false,
-        Expr::Bin { lhs, rhs, .. } => contains_call_to(lhs, name) || contains_call_to(rhs, name),
-        Expr::Un { expr, .. } => contains_call_to(expr, name),
+        Expr::Bin { lhs, rhs, .. } => {
+            contains_call_to_at(lhs, name, depth + 1) || contains_call_to_at(rhs, name, depth + 1)
+        }
+        Expr::Un { expr, .. } => contains_call_to_at(expr, name, depth + 1),
         Expr::Call {
             name: callee,
             args,
-        } => callee == name || args.iter().any(|a| contains_call_to(a, name)),
-        Expr::Assign { value, .. } => contains_call_to(value, name),
+        } => callee == name || args.iter().any(|a| contains_call_to_at(a, name, depth + 1)),
+        Expr::Assign { value, .. } => contains_call_to_at(value, name, depth + 1),
     }
 }
 
 pub(crate) fn collect_stmt_names(stmt: &Stmt, out: &mut Vec<String>) {
+    collect_stmt_names_at(stmt, out, 0)
+}
+
+/// The recursive form of `collect_stmt_names`, with the depth so far.
+///
+/// A program nested deeper than the limit is left alone: the rewrite skips
+/// it, and the code generator reports the depth.
+pub(crate) fn collect_stmt_names_at(stmt: &Stmt, out: &mut Vec<String>, depth: usize) {
+    if depth > MAX_AST_DEPTH {
+        return;
+    }
     match stmt {
         Stmt::Let { name, init, .. } => {
             out.push(name.clone());
             if let Some(init) = init {
-                collect_expr_names(init, out);
+                collect_expr_names_at(init, out, depth + 1);
             }
         }
         Stmt::Func {
@@ -68,7 +115,7 @@ pub(crate) fn collect_stmt_names(stmt: &Stmt, out: &mut Vec<String>) {
             out.push(name.clone());
             out.extend(params.iter().map(|(p, _)| p.clone()));
             for stmt in body {
-                collect_stmt_names(stmt, out);
+                collect_stmt_names_at(stmt, out, depth + 1);
             }
         }
         Stmt::If {
@@ -76,45 +123,48 @@ pub(crate) fn collect_stmt_names(stmt: &Stmt, out: &mut Vec<String>) {
             then,
             els,
         } => {
-            collect_expr_names(cond, out);
+            collect_expr_names_at(cond, out, depth + 1);
             for stmt in then.iter().chain(els.iter()) {
-                collect_stmt_names(stmt, out);
+                collect_stmt_names_at(stmt, out, depth + 1);
             }
         }
         Stmt::While { cond, body } => {
-            collect_expr_names(cond, out);
+            collect_expr_names_at(cond, out, depth + 1);
             for stmt in body {
-                collect_stmt_names(stmt, out);
+                collect_stmt_names_at(stmt, out, depth + 1);
             }
         }
         Stmt::Block(stmts) => {
             for stmt in stmts {
-                collect_stmt_names(stmt, out);
+                collect_stmt_names_at(stmt, out, depth + 1);
             }
         }
-        Stmt::Return(Some(expr)) => collect_expr_names(expr, out),
+        Stmt::Return(Some(expr)) => collect_expr_names_at(expr, out, depth + 1),
         Stmt::Return(None) => {}
-        Stmt::Expr(expr) => collect_expr_names(expr, out),
+        Stmt::Expr(expr) => collect_expr_names_at(expr, out, depth + 1),
     }
 }
 
-pub(crate) fn collect_expr_names(expr: &Expr, out: &mut Vec<String>) {
+pub(crate) fn collect_expr_names_at(expr: &Expr, out: &mut Vec<String>, depth: usize) {
+    if depth > MAX_AST_DEPTH {
+        return;
+    }
     match expr {
         Expr::Num(_) | Expr::Bool(_) => {}
         Expr::Var(name) => out.push(name.clone()),
         Expr::Assign { name, value } => {
             out.push(name.clone());
-            collect_expr_names(value, out);
+            collect_expr_names_at(value, out, depth + 1);
         }
         Expr::Bin { lhs, rhs, .. } => {
-            collect_expr_names(lhs, out);
-            collect_expr_names(rhs, out);
+            collect_expr_names_at(lhs, out, depth + 1);
+            collect_expr_names_at(rhs, out, depth + 1);
         }
-        Expr::Un { expr, .. } => collect_expr_names(expr, out),
+        Expr::Un { expr, .. } => collect_expr_names_at(expr, out, depth + 1),
         Expr::Call { name, args } => {
             out.push(name.clone());
             for arg in args {
-                collect_expr_names(arg, out);
+                collect_expr_names_at(arg, out, depth + 1);
             }
         }
     }

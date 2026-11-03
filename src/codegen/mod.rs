@@ -202,6 +202,7 @@ fn define_body(
 
         let mut fg = FnGen {
             b,
+            depth: 0,
             module,
             funcs,
             print_num,
@@ -287,6 +288,8 @@ fn emit_main_wrapper(
 /// return their machine value (or `None` for `void`) plus their `Type`.
 struct FnGen<'a> {
     b: FunctionBuilder<'a>,
+    /// How deeply the expression or statement being generated is nested.
+    depth: usize,
     module: &'a mut ObjectModule,
     funcs: &'a HashMap<String, FnSig>,
     print_num: FuncId,

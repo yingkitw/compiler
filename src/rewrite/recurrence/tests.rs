@@ -7,7 +7,7 @@ use crate::rewrite::common::testing::*;
 #[test]
 fn a_recurrence_becomes_a_loop() {
     let prog = optimised(
-        "function f(n: number): number {\n\
+        "function f(n: int): int {\n\
          \x20  if (n < 2) { return n; }\n\
          \x20  return f(n - 1) + f(n - 2);\n\
          }\n",
@@ -25,7 +25,7 @@ fn a_recurrence_becomes_a_loop() {
 #[test]
 fn a_recurrence_with_swapped_calls_becomes_a_loop() {
     let prog = optimised(
-        "function f(n: number): number {\n\
+        "function f(n: int): int {\n\
          \x20  if (n < 2) { return n; }\n\
          \x20  return f(n - 2) + f(n - 1);\n\
          }\n",
@@ -41,7 +41,7 @@ fn a_recurrence_with_a_side_effect_in_the_base_is_left_alone() {
     // the call tree; the rewrite evaluates it exactly twice.
     let prog = optimised(
         "function g(): number { return 1; }\n\
-         function f(n: number): number {\n\
+         function f(n: int): int {\n\
          \x20  if (n < 2) { return g(); }\n\
          \x20  return f(n - 1) + f(n - 2);\n\
          }\n",
@@ -54,7 +54,7 @@ fn a_recurrence_with_a_side_effect_in_the_base_is_left_alone() {
 fn a_recurrence_with_a_wider_gap_becomes_a_loop() {
     // The loop keeps as many values as the widest offset needs.
     let prog = optimised(
-        "function f(n: number): number {\n\
+        "function f(n: int): int {\n\
          \x20  if (n < 3) { return n; }\n\
          \x20  return f(n - 1) + f(n - 3);\n\
          }\n",
@@ -73,7 +73,7 @@ fn a_recurrence_with_a_wider_gap_becomes_a_loop() {
 fn a_recurrence_with_an_extra_term_becomes_a_loop() {
     // A term that does not call the function is carried along the loop.
     let prog = optimised(
-        "function f(n: number): number {\n\
+        "function f(n: int): int {\n\
          \x20  if (n < 2) { return n; }\n\
          \x20  return f(n - 1) + f(n - 2) + 1;\n\
          }\n",
@@ -85,7 +85,7 @@ fn a_recurrence_with_an_extra_term_becomes_a_loop() {
 #[test]
 fn a_recurrence_with_three_calls_becomes_a_loop() {
     let prog = optimised(
-        "function f(n: number): number {\n\
+        "function f(n: int): int {\n\
          \x20  if (n < 3) { return 1; }\n\
          \x20  return f(n - 1) + f(n - 2) + f(n - 3);\n\
          }\n",
@@ -99,7 +99,7 @@ fn a_recurrence_that_calls_another_function_is_left_alone() {
     // The rewrite would evaluate the call in the opposite order.
     let prog = optimised(
         "function g(x: number): number { return x; }\n\
-         function f(n: number): number {\n\
+         function f(n: int): int {\n\
          \x20  if (n < 2) { return n; }\n\
          \x20  return f(n - 1) + g(n);\n\
          }\n",
@@ -111,7 +111,7 @@ fn a_recurrence_that_calls_another_function_is_left_alone() {
 #[test]
 fn a_recurrence_that_assigns_is_left_alone() {
     let prog = optimised(
-        "function f(n: number): number {\n\
+        "function f(n: int): int {\n\
          \x20  if (n < 2) { return n; }\n\
          \x20  let x = 0;\n\
          \x20  return f(n - 1) + f(n - 2) + (x = 1);\n\
@@ -125,7 +125,7 @@ fn a_recurrence_that_assigns_is_left_alone() {
 fn a_recurrence_that_counts_up_is_left_alone() {
     // The offsets have to step down, or the recursion never ends.
     let prog = optimised(
-        "function f(n: number): number {\n\
+        "function f(n: int): int {\n\
          \x20  if (n < 2) { return n; }\n\
          \x20  return f(n + 1) + f(n - 2);\n\
          }\n",
@@ -137,7 +137,7 @@ fn a_recurrence_that_counts_up_is_left_alone() {
 #[test]
 fn a_recurrence_with_a_statement_before_the_base_case_is_left_alone() {
     let prog = optimised(
-        "function f(n: number): number {\n\
+        "function f(n: int): int {\n\
          \x20  let x = n * 2;\n\
          \x20  if (n < 2) { return n; }\n\
          \x20  return f(n - 1) + f(n - 2);\n\
@@ -150,7 +150,7 @@ fn a_recurrence_with_a_statement_before_the_base_case_is_left_alone() {
 #[test]
 fn a_chain_recursion_is_not_a_recurrence() {
     let prog = optimised(
-        "function f(n: number): number {\n\
+        "function f(n: int): int {\n\
          \x20  if (n < 1) { return 0; }\n\
          \x20  return f(n - 1);\n\
          }\n",
@@ -177,7 +177,7 @@ fn a_recurrence_in_a_boolean_function_is_left_alone() {
 #[test]
 fn the_recurrence_accumulators_avoid_a_collision() {
     let prog = optimised(
-        "function f(n: number, __ts_rec_v0: number): number {\n\
+        "function f(n: int, __ts_rec_v0: int): int {\n\
          \x20  if (n < 2) { return n; }\n\
          \x20  return f(n - 1, __ts_rec_v0) + f(n - 2, __ts_rec_v0);\n\
          }\n",

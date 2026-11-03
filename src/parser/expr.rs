@@ -64,6 +64,7 @@ impl Parser {
                 _ => break,
             };
             self.bump();
+            self.deepen()?;
             let rhs = self.comparison()?;
             lhs = Expr::Bin {
                 op,
@@ -85,6 +86,7 @@ impl Parser {
                 _ => break,
             };
             self.bump();
+            self.deepen()?;
             let rhs = self.term()?;
             lhs = Expr::Bin {
                 op,
@@ -104,6 +106,7 @@ impl Parser {
                 _ => break,
             };
             self.bump();
+            self.deepen()?;
             let rhs = self.factor()?;
             lhs = Expr::Bin {
                 op,
@@ -138,7 +141,10 @@ impl Parser {
         match self.peek() {
             Tok::Bang => {
                 self.bump();
-                let e = self.unary()?;
+                self.enter()?;
+                self.deepen()?;
+                    let e = self.unary()?;
+                    self.leave();
                 Ok(Expr::Un {
                     op: UnOp::Not,
                     expr: Box::new(e),
@@ -146,7 +152,10 @@ impl Parser {
             }
             Tok::Minus => {
                 self.bump();
-                let e = self.unary()?;
+                self.enter()?;
+                self.deepen()?;
+                    let e = self.unary()?;
+                    self.leave();
                 Ok(Expr::Un {
                     op: UnOp::Neg,
                     expr: Box::new(e),
@@ -200,7 +209,9 @@ impl Parser {
             }
             Tok::LParen => {
                 self.bump();
+                self.enter()?;
                 let e = self.expr()?;
+                self.leave();
                 self.expect(&Tok::RParen, "')'")?;
                 Ok(e)
             }

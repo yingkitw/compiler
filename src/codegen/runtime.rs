@@ -70,7 +70,11 @@ void ts_print_number(double x) {
         int e = n - 1;
         *p++ = e < 0 ? '-' : '+';
         if (e < 0) e = -e;
-        p += sprintf(p, "%d", e);
+        /* snprintf, not sprintf: it cannot write past the buffer, and it
+         * returns the length it would have written. */
+        size_t left = sizeof(out) - (size_t)(p - out);
+        int written = snprintf(p, left, "%d", e);
+        if (written > 0) p += written;
     }
     *p = '\0';
     puts(out);
@@ -117,6 +121,19 @@ static void ts_on_sigsegv(int sig, siginfo_t *info, void *ctx) {
     _exit(1);
 }
 
+/* An integer division by zero traps: the hardware raises SIGFPE on some
+ * platforms, and Cranelift raises SIGILL with an explicit check on others.
+ * Float division does not trap — it produces Infinity, like JavaScript's — so
+ * this only ever fires for the `int` type. */
+static void ts_on_sigfpe(int sig, siginfo_t *info, void *ctx) {
+    (void)sig; (void)info; (void)ctx;
+    fflush(stdout);
+    static const char msg[] = "error: integer division by zero or overflow\n";
+    ssize_t ignored = write(2, msg, sizeof msg - 1);
+    (void)ignored;
+    _exit(1);
+}
+
 void ts_runtime_init(void) {
     stack_t ss;
     ss.ss_sp = ts_sigstack;
@@ -130,5 +147,15 @@ void ts_runtime_init(void) {
     sa.sa_sigaction = ts_on_sigsegv;
     sigemptyset(&sa.sa_mask);
     sigaction(SIGSEGV, &sa, NULL);
+
+    memset(&sa, 0, sizeof sa);
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESETHAND;
+    sa.sa_sigaction = ts_on_sigfpe;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGFPE, &sa, NULL);
+    /* SIGILL is how Cranelift's own divide-by-zero check traps. A generated
+     * program has no other illegal instruction, so the only trap it can take
+     * is a division that cannot be performed. */
+    sigaction(SIGILL, &sa, NULL);
 }
 "#;

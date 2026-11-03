@@ -109,3 +109,23 @@ pub enum Stmt {
 pub struct Program {
     pub stmts: Vec<Stmt>,
 }
+
+/// How deeply expressions and statements may nest.
+///
+/// Every stage that walks the tree — the parser, the rewrites, the code
+/// generator — recurses, and a program with a hundred thousand nested
+/// parentheses would take the compiler down with it. The limit turns that
+/// into a diagnostic instead of a stack overflow. It is generous enough for
+/// any program a person would write, and low enough that the compiler's own
+/// stack has room to spare.
+pub const MAX_DEPTH: usize = 512;
+
+/// How deep the *expression tree* may be.
+///
+/// A long sum — `1 + 1 + 1 + …` a thousand times — is a tree a thousand
+/// levels deep, because the parser builds it left-associated, and every
+/// stage that walks the tree recurses over it. The limit is generous enough
+/// for a program a person would write, and the compiler runs on a thread with
+/// a large stack so that reaching it is the compiler's decision rather than
+/// the operating system's.
+pub const MAX_AST_DEPTH: usize = 4096;

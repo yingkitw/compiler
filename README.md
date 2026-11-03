@@ -49,13 +49,12 @@ tsc <input.ts> [-o <output>] [-c]
 |---|---|
 | `-o`, `--output <path>` | Output path. Default: the input path with its extension replaced |
 | `-c`, `--compile-only` | Emit an object file only, don't link. Default: `<stem>.o` |
+| `-V`, `--version` | Print the compiler's name and version |
 | `-h`, `--help` | Print usage |
 
-```sh
-tsc app.ts -o build/app     # choose the output path
-tsc app.ts -c               # emit app.o, skip linking
-tsc app.ts                  # writes ./app
-```
+The link step uses the C compiler named by `CC` (`cc` by default) with the
+flags from `CFLAGS` — the conventional ones, and how you link the runtime with
+the sanitizers.
 
 Exit codes: `0` success · `1` compile or link error · `2` usage error.
 
@@ -64,11 +63,12 @@ Exit codes: `0` success · `1` compile or link error · `2` usage error.
 A deliberately small, statically-typed subset of TypeScript.
 
 ```ts
-// Types: number (IEEE-754 double), boolean, void.
+// Types: number (IEEE-754 double), int (64-bit, wrapping), boolean, void.
 // Annotations are optional wherever the type is inferrable.
 let x: number = 40;
 let y = 2;                    // inferred: number
 const pi: number = 3.14159;
+let k: int = -5;              // negative int literals work
 
 // Functions — recursion and forward references both work.
 // A self-recursive call in tail position is turned into a loop, so a tail
@@ -109,12 +109,15 @@ The checker is strict — there are no implicit conversions.
 - Arithmetic (`+ - * / %`) and relational operators (`< <= > >=`) require both
   operands to have the *same* numeric type — two `number`s or two `int`s.
   There is no implicit conversion between them.
+- `int` arithmetic wraps (there is no overflow check) and division by zero
+  reports `error: integer division by zero or overflow` at runtime.
 - Equality (`== !=`) requires both operands to have the *same* type.
-- `&&`, `||`, and `!` accept `boolean` or `number` and always yield `boolean`.
-  They **short-circuit**: in `false && (1 / 0 > 0)`, the right side is never
-  evaluated.
+- `&&`, `||`, and `!` accept `boolean`, `number` or `int` and always yield
+  `boolean`. They **short-circuit**: in `false && (1 / 0 > 0)`, the right side
+  is never evaluated.
 - Assignment requires the value's type to match the variable's type exactly.
 - A function whose return type isn't `void` must return a value on every path.
+  `void` cannot be the type of a variable or a parameter.
 
 Type errors are reported at compile time, not at runtime:
 
@@ -175,10 +178,12 @@ Read [ARCHITECTURE.md](ARCHITECTURE.md) for the full design rationale, and
 ## Not supported yet
 
 Strings, arrays, objects, classes, closures, generics, modules, `for`/`switch`,
-`continue`/`break`, `++`/`--`, and compound assignment.
+`continue`/`break`, `++`/`--`, and compound assignment. `void` is a return
+type only — a variable or a parameter cannot have it.
 
 `number` is an IEEE-754 double, so it is exact only up to 2^53. Use the `int`
-type (64-bit) when the value has to be exact.
+type (64-bit, wrapping) when the value has to be exact; an `int` division by
+zero is a runtime error rather than an `Infinity`.
 
 This is a compiler for a *subset*, not a TypeScript implementation. It is meant
 as a readable reference for how a native code generator is put together — and as
@@ -272,7 +277,18 @@ cargo test    # compiles and runs every example, plus type-error cases
 
 The test suite compiles each program in `examples/` to a native binary, runs it,
 and asserts its exact output — so the tests check *generated code*, not just
-generated IR.
+generated IR. Beyond that:
+
+- `tests/rewrite.rs` — the rewrites are compiled both as written and as the
+  equivalent hand-written program, and the two must agree exactly. Differential
+  testing is how two floating-point miscompiles were caught.
+- `tests/abi.rs` — a C driver calls the generated code, pinning the calling
+  convention against the platform's.
+- `tests/sanitize.rs` — every example is linked with the address and
+  undefined-behaviour sanitizers and run (skipped when the sanitizers are
+  unavailable).
+- `tests/fuzz.rs` — 300 random token sequences must not panic the compiler
+  and must exit with a documented code.
 
 ## Documentation
 

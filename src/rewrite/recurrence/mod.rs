@@ -128,7 +128,7 @@ fn rewrite_recurrence(
 
     // The loop's update: the source expression with every self-call
     // replaced by the accumulator that holds that value.
-    let Some(update) = build_loop_expr(&rec.tail, name, params, &accs, &index, p0) else {
+    let Some(update) = build_loop_expr(&rec.tail, name, params, &accs, &index, p0, 0) else {
         return;
     };
 
@@ -225,10 +225,13 @@ fn match_recurrence(
         Some(Type::Number) | Some(Type::Int) => {}
         _ => return None,
     }
-    // The parameter the recurrence counts down has to be a number, because
-    // the loop compares it with its own index.
+    // The parameter the recurrence counts down has to be an *integer*. The
+    // loop counts the values it computes with its own index, and a
+    // fractional argument would make the loop's count and the recursion's
+    // depth disagree: the recursion descends by whole offsets and reaches
+    // `2.5 - 1 = 1.5`, while the loop counts integers.
     match params.first().map(|(_, t)| *t) {
-        Some(Type::Number) | Some(Type::Int) => {}
+        Some(Type::Int) => {}
         _ => return None,
     }
     if params.is_empty() || body.len() < 2 {
@@ -266,7 +269,7 @@ fn match_recurrence(
     // The expression must call the function, at constant offsets, and
     // everything else in it must be free of side effects.
     let mut offsets = Vec::new();
-    if !collect_offsets(tail, name, params, &mut offsets) {
+    if !collect_offsets(tail, name, params, &mut offsets, 0) {
         return None;
     }
     let width = *offsets.iter().max()?;
@@ -287,7 +290,12 @@ fn collect_offsets(
     name: &str,
     params: &[(String, Type)],
     offsets: &mut Vec<i64>,
+    depth: usize,
 ) -> bool {
+    if depth > MAX_AST_DEPTH {
+        // Too deep to look at: leave the program alone.
+        return false;
+    }
     match expr {
         Expr::Call {
             name: callee,
@@ -304,10 +312,10 @@ fn collect_offsets(
         Expr::Call { .. } => false,
         Expr::Num(_) | Expr::Bool(_) | Expr::Var(_) => true,
         Expr::Bin { lhs, rhs, .. } => {
-            collect_offsets(lhs, name, params, offsets)
-                && collect_offsets(rhs, name, params, offsets)
+            collect_offsets(lhs, name, params, offsets, depth + 1)
+                && collect_offsets(rhs, name, params, offsets, depth + 1)
         }
-        Expr::Un { expr, .. } => collect_offsets(expr, name, params, offsets),
+        Expr::Un { expr, .. } => collect_offsets(expr, name, params, offsets, depth + 1),
         // An assignment has a side effect.
         Expr::Assign { .. } => false,
     }
@@ -324,7 +332,11 @@ fn build_loop_expr(
     accs: &[String],
     index: &str,
     param: &str,
+    depth: usize,
 ) -> Option<Expr> {
+    if depth > MAX_AST_DEPTH {
+        return None;
+    }
     match expr {
         Expr::Call {
             name: callee,
@@ -345,8 +357,8 @@ fn build_loop_expr(
             }
         }
         Expr::Bin { op, lhs, rhs } => {
-            let lhs = build_loop_expr(lhs, name, params, accs, index, param)?;
-            let rhs = build_loop_expr(rhs, name, params, accs, index, param)?;
+            let lhs = build_loop_expr(lhs, name, params, accs, index, param, depth + 1)?;
+            let rhs = build_loop_expr(rhs, name, params, accs, index, param, depth + 1)?;
             Some(Expr::Bin {
                 op: *op,
                 lhs: Box::new(lhs),
@@ -354,7 +366,7 @@ fn build_loop_expr(
             })
         }
         Expr::Un { op, expr } => {
-            let e = build_loop_expr(expr, name, params, accs, index, param)?;
+            let e = build_loop_expr(expr, name, params, accs, index, param, depth + 1)?;
             Some(Expr::Un {
                 op: *op,
                 expr: Box::new(e),

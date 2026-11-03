@@ -5,18 +5,16 @@
 
 // The classic: fibonacci. As written, fib(90) would make 2^90 calls; the
 // rewrite makes ninety of them.
+//
+// The rewrite needs the parameter to be an `int`: the loop counts the values
+// it computes with its own index, and a fractional argument would make the
+// loop's count and the recursion's depth disagree. A `number` fibonacci is
+// left exactly as it was written.
 function fib(n: int): int {
     if (n < 2) { return n; }
     return fib(n - 1) + fib(n - 2);
 }
 print(fib(90));   // 2880067194370816120
-
-// The same shape with `number`, where the answer is a double.
-function fibNumber(n: number): number {
-    if (n < 2) { return n; }
-    return fibNumber(n - 1) + fibNumber(n - 2);
-}
-print(fibNumber(70));   // 190392490709135
 
 // Subtraction and multiplication are rewritten the same way.
 function difference(n: int): int {

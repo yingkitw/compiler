@@ -13,6 +13,17 @@ use super::FnGen;
 
 impl<'a> FnGen<'a> {
     pub(super) fn gen_expr(&mut self, e: &Expr) -> Result<(Option<Value>, Type), String> {
+        self.depth += 1;
+        if self.depth > MAX_AST_DEPTH {
+            self.depth -= 1;
+            return Err("expression or statement nested too deeply".to_string());
+        }
+        let result = self.gen_expr_inner(e);
+        self.depth -= 1;
+        result
+    }
+
+    fn gen_expr_inner(&mut self, e: &Expr) -> Result<(Option<Value>, Type), String> {
         match e {
             Expr::Num(n) => {
                 let v = self.b.ins().f64const(n.value);
@@ -219,23 +230,46 @@ impl<'a> FnGen<'a> {
         e: &Expr,
         expected: Option<Type>,
     ) -> Result<(Option<Value>, Type), String> {
-        if let (Expr::Num(lit), Some(Type::Int)) = (e, expected) {
+        if expected == Some(Type::Int) {
+            // A negative literal is a unary minus over a literal, and it
+            // should adopt the context's type the way a positive one does:
+            // `let x: int = -5;` is an int, not a number.
+            let (lit, negative) = match e {
+                Expr::Num(lit) => (lit, false),
+                Expr::Un {
+                    op: UnOp::Neg,
+                    expr,
+                } => match &**expr {
+                    Expr::Num(lit) => (lit, true),
+                    _ => return self.gen_expr(e),
+                },
+                _ => return self.gen_expr(e),
+            };
             // Use the literal's exact integer value when it has one. A large
             // literal such as 9007199254740993 does not fit in an f64, so the
             // double must not be the source of truth here.
             let exact = match lit.int {
-                Some(i) => i,
+                Some(i) => {
+                    if negative {
+                        i.checked_neg().ok_or_else(|| {
+                            format!("the value {} does not fit in an int", lit.value)
+                        })?
+                    } else {
+                        i
+                    }
+                }
                 None => {
-                    if lit.value.fract() != 0.0 {
+                    let value = if negative { -lit.value } else { lit.value };
+                    if value.fract() != 0.0 {
                         return Err(format!(
                             "cannot use the non-integer value {} as an int",
-                            lit.value
+                            value
                         ));
                     }
-                    if lit.value < i64::MIN as f64 || lit.value > i64::MAX as f64 {
-                        return Err(format!("the value {} does not fit in an int", lit.value));
+                    if value < i64::MIN as f64 || value > i64::MAX as f64 {
+                        return Err(format!("the value {} does not fit in an int", value));
                     }
-                    lit.value as i64
+                    value as i64
                 }
             };
             let v = self.b.ins().iconst(types::I64, exact);

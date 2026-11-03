@@ -23,8 +23,11 @@ fn a_tail_call_becomes_a_loop() {
 
 #[test]
 fn an_accumulator_tail_call_becomes_a_loop() {
+    // An accumulator needs an integer return: the rewrite folds the terms in
+    // a different order than the source program does, which is exact for
+    // integers and not for floating point.
     let prog = rewrite(
-        "function f(n: number): number {\n\
+        "function f(n: int): int {\n\
          \x20  if (n < 1) { return 0; }\n\
          \x20  return f(n - 1) + 1;\n\
          }\n",
@@ -272,7 +275,7 @@ fn a_void_function_without_a_return_type_is_left_alone() {
 #[test]
 fn the_accumulator_name_avoids_a_parameter() {
     let prog = rewrite(
-        "function f(n: number, __ts_tco_acc: number): number {\n\
+        "function f(n: int, __ts_tco_acc: int): int {\n\
          \x20  if (n < 1) { return __ts_tco_acc; }\n\
          \x20  return f(n - 1, __ts_tco_acc) + 1;\n\
          }\n",

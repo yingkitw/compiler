@@ -8,13 +8,20 @@ use super::Parser;
 
 impl Parser {
     pub(super) fn stmt(&mut self) -> Result<Stmt, String> {
+        // Each statement starts a new expression, and so a new tree.
+        self.reset_depth();
         match self.peek() {
             Tok::Let | Tok::Const => self.let_decl(),
             Tok::Function => self.func_decl(),
             Tok::If => self.if_stmt(),
             Tok::While => self.while_stmt(),
             Tok::Return => self.return_stmt(),
-            Tok::LBrace => Ok(Stmt::Block(self.block()?)),
+            Tok::LBrace => {
+                self.enter()?;
+                let block = self.block();
+                self.leave();
+                Ok(Stmt::Block(block?))
+            }
             _ => {
                 let e = self.expr()?;
                 self.expect(&Tok::Semi, "';'")?;
@@ -50,7 +57,7 @@ impl Parser {
         self.bump();
         let name = self.expect_ident("variable name")?;
         let ty = if self.eat(&Tok::Colon) {
-            Some(self.type_annotation()?)
+            Some(self.value_type()?)
         } else {
             None
         };
@@ -78,7 +85,7 @@ impl Parser {
         while *self.peek() != Tok::RParen {
             let pname = self.expect_ident("parameter name")?;
             self.expect(&Tok::Colon, "':'")?;
-            let pty = self.type_annotation()?;
+            let pty = self.value_type()?;
             params.push((pname, pty));
             if !self.eat(&Tok::Comma) {
                 break;
@@ -126,6 +133,21 @@ impl Parser {
             self.expect(&Tok::Semi, "';'")?;
             Ok(Stmt::Return(Some(e)))
         }
+    }
+
+    /// A type for something that holds a value.
+    ///
+    /// `void` is the type of "no value", and a variable or a parameter
+    /// always holds one, so it is not allowed here.
+    pub(super) fn value_type(&mut self) -> Result<Type, String> {
+        let ty = self.type_annotation()?;
+        if ty == Type::Void {
+            return Err(format!(
+                "line {}: a variable or a parameter cannot have type 'void'",
+                self.line()
+            ));
+        }
+        Ok(ty)
     }
 
     pub(super) fn type_annotation(&mut self) -> Result<Type, String> {

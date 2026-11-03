@@ -239,7 +239,6 @@ fn recurrence() {
     assert_eq!(
         compile_and_run("recurrence"),
         "2880067194370816120\n\
-         190392490709135\n\
          -1\n\
          1\n\
          324\n"
@@ -443,6 +442,41 @@ fn a_recurrence_means_the_same_program_as_the_loop_it_replaces() {
             "the {name} recurrence must mean the same thing either way"
         );
     }
+}
+
+#[test]
+fn a_number_accumulator_is_left_alone_so_the_rounding_survives() {
+    // Regression test. The accumulator rewrite folds the terms in a
+    // different order than the source program does: the source folds from
+    // the innermost level outwards, the loop from the outermost. That is
+    // exact for integers, whose wrapping arithmetic is associative, but not
+    // for floating point — with a base of 1e16 and three terms of 1, the
+    // rewrite printed 10000000000000004 where the program computes
+    // 10000000000000000. A `number` accumulator is therefore left exactly as
+    // it was written.
+    let source = "function f(n: number): number {\n\
+                  \x20 if (n < 1) { return 10000000000000000; }\n\
+                  \x20 return f(n - 1) + 1;\n\
+                  }\n\
+                  print(f(3));\n";
+    assert_eq!(
+        run_source("tco_float_rounding", source),
+        "10000000000000000\n"
+    );
+}
+
+#[test]
+fn a_recurrence_with_a_number_parameter_is_left_alone() {
+    // Regression test. The recurrence rewrite counts the values it computes
+    // with its own index; a fractional argument makes that count disagree
+    // with the recursion's depth, and f(2.5) printed 1 where the program
+    // computes 2. A `number` parameter is therefore left as written.
+    let source = "function f(n: number): number {\n\
+                  \x20 if (n < 2) { return n; }\n\
+                  \x20 return f(n - 1) + f(n - 2);\n\
+                  }\n\
+                  print(f(2.5));\n";
+    assert_eq!(run_source("rec_float_arg", source), "2\n");
 }
 
 #[test]
