@@ -80,9 +80,13 @@ fn agents_md_structure_lists_every_module() {
     let Ok(agents) = fs::read_to_string(root().join("AGENTS.md")) else {
         return;
     };
+    // A module is either a file (`foo.rs`) or a directory of files
+    // (`foo/mod.rs`, `foo/expr.rs`, ...). Either form counts as documented.
     let missing: Vec<String> = declared_modules()
         .into_iter()
-        .filter(|m| !agents.contains(&format!("{m}.rs")))
+        .filter(|m| {
+            !(agents.contains(&format!("{m}.rs")) || agents.contains(&format!("{m}/")))
+        })
         .collect();
     assert!(
         missing.is_empty(),
@@ -95,7 +99,7 @@ fn architecture_md_mentions_every_module() {
     let arch = read("ARCHITECTURE.md");
     let missing: Vec<String> = declared_modules()
         .into_iter()
-        .filter(|m| !documented_in(m, &arch))
+        .filter(|m| !(documented_in(m, &arch) || arch.contains(&format!("{m}/"))))
         .collect();
     assert!(
         missing.is_empty(),

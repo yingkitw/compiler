@@ -15,15 +15,15 @@ design is the way it is.
                     └───────────┬──────────┘
                                 │  Vec<Token>
                     ┌───────────▼──────────┐
-                    │      parser.rs        │  tokens → ast::Program
+                    │      parser/         │  tokens → ast::Program
                     └───────────┬──────────┘
                                 │  ast::Program
                     ┌───────────▼──────────┐
-                    │      rewrite.rs       │  tail calls and recurrences → loops
+                    │      rewrite/        │  tail calls and recurrences → loops
                     └───────────┬──────────┘
                                 │  ast::Program
                     ┌───────────▼──────────┐
-                    │      codegen.rs       │  Program → Cranelift IR
+                    │      codegen/        │  Program → Cranelift IR
                     │   (type checks too)   │  → object file bytes
                     └───────────┬──────────┘
                                 │  Vec<u8> (object)
@@ -39,6 +39,15 @@ design is the way it is.
 **Dependency direction is strictly one-way**: `main` → `lexer` → `parser` →
 `rewrite` → `codegen` → `ast`. `ast.rs` depends on nothing inside the crate.
 No cycles, no back-references.
+
+**The three biggest modules are directories**, each split so that no file is
+much over 400 lines:
+
+| Module | Files | What is in them |
+|---|---|---|
+| `parser/` | `mod.rs`, `stmt.rs`, `expr.rs`, `tests.rs` | the token helpers and the statement dispatch; the statement forms; one method per precedence level |
+| `rewrite/` | `mod.rs`, `common.rs`, `tail_call/`, `recurrence/` | the entry point and the shared predicates; each rewrite with its own tests |
+| `codegen/` | `mod.rs`, `ty.rs`, `runtime.rs`, `stmt.rs`, `expr.rs`, `tests.rs` | `compile()` and the function builder; the type lattice; the C shim; statement and expression generation |
 
 ### `main.rs` — CLI entry point
 - Parses arguments by hand: `-o` / `--output`, `-c` / `--compile-only`,
@@ -68,22 +77,25 @@ No cycles, no back-references.
 - Because both sides pattern-match on these types, **adding a variant requires
   a parser arm and a codegen arm** — see MEMORY.md → *AST / Parser Sync*.
 
-### `parser.rs` — recursive-descent parser
+### `parser/` — recursive-descent parser
 - `parse(tokens: Vec<Token>) -> Result<Program, String>`.
-- One method per precedence level (`logic_or`, `logic_and`, `equality`,
-  `comparison`, `term`, `factor`, `unary`, `call`, `primary`), plus `assignment`
-  at the top.
-- Statement parsing: `let_decl`, `func_decl`, `if_stmt`, `while_stmt`,
-  `return_stmt`, `block`, expression statements.
+- `mod.rs` holds the parser state and the token helpers; `stmt.rs` the
+  statement forms (`let_decl`, `func_decl`, `if_stmt`, `while_stmt`,
+  `return_stmt`, `block`, expression statements); `expr.rs` one method per
+  precedence level (`logic_or`, `logic_and`, `equality`, `comparison`, `term`,
+  `factor`, `unary`, `call`, `primary`), plus `assignment` at the top.
 - The parser performs only *syntactic* checks plus two well-formedness rules:
   a `let` needs a type or an initializer, and `main` must have the right shape.
   All type checking happens later.
 
-### `rewrite.rs` — source-to-source optimisations
+### `rewrite/` — source-to-source optimisations
 - `optimise(prog: &mut Program)` runs every rewrite over the program:
-  `eliminate_tail_calls` and then `eliminate_recurrences`.
-- It runs **between parsing and code generation**, so `codegen.rs` sees only
+  `tail_call::eliminate_tail_calls` and then `recurrence::eliminate_recurrences`.
+- It runs **between parsing and code generation**, so `codegen/` sees only
   ordinary statements and needs no knowledge of the optimisations.
+- `common.rs` holds what both rewrites share: the predicates ("is this
+  expression free of side effects?") and the name helpers ("which names does
+  this program already use?").
 - **Tail-call elimination**: a self-recursive call in tail position becomes a
   loop. A function whose body is
   ```
@@ -139,23 +151,28 @@ No cycles, no back-references.
   evaluates it exactly twice — for the two starting values — so the base
   expression must have no side effects either.
 
-### `codegen.rs` — type checking + machine code
+### `codegen/` — type checking + machine code
 - `compile(program: &Program) -> Result<Vec<u8>, String>` returns the bytes of a
   relocatable object file.
 - Structure:
-  - `compile()` — sets up the ISA, creates the `ObjectModule`, declares runtime
-    imports, then runs two passes over the function declarations, then emits
-    `__ts_start` and the C `main` wrapper.
-  - `define_body()` — builds one function: creates the entry block, binds
-    parameters to SSA variables, runs the statement generator, and adds the
-    implicit return if needed.
-  - `FnGen` — the per-function generator. Holds the `FunctionBuilder`, a
-    `&mut ObjectModule` (needed because `declare_func_in_func` takes `&mut self`
-    in Cranelift 0.136), the function signature table, and the scope stack.
-    Its methods (`gen_stmt`, `gen_expr`, `gen_binop`, `gen_short_circuit`,
-    `gen_call`) do type checking *and* emit instructions in one pass.
-- `RUNTIME_C` — the embedded C runtime shim, written to disk at link time.
-- `cl_ty()` maps the language's types onto Cranelift's `F64` / `I8`.
+  - `mod.rs` — `compile()` sets up the ISA, creates the `ObjectModule`, declares
+    runtime imports, then runs two passes over the function declarations, then
+    emits `__ts_start` and the C `main` wrapper. `define_body()` builds one
+    function: creates the entry block, binds parameters to SSA variables, runs
+    the statement generator, and adds the implicit return if needed.
+  - `ty.rs` — the type lattice: `cl_ty()` maps the language's types onto
+    Cranelift's `F64` / `I8` / `I64`, `sig_for()` builds a function's
+    signature, and `FnSig` / `Slot` are the signature table and a variable's
+    slot.
+  - `runtime.rs` — `RUNTIME_C`, the embedded C runtime shim, written to disk at
+    link time.
+  - `stmt.rs` and `expr.rs` — `FnGen`, the per-function generator. It holds the
+    `FunctionBuilder`, a `&mut ObjectModule` (needed because
+    `declare_func_in_func` takes `&mut self` in Cranelift 0.136), the function
+    signature table, and the scope stack. Its methods (`gen_stmt`, `gen_expr`,
+    `gen_binop`, `gen_short_circuit`, `gen_call`) do type checking *and* emit
+    instructions in one pass. The two files are two `impl FnGen` blocks: one
+    for the statements, one for the expressions.
 
 ## Data Flow
 
@@ -267,17 +284,31 @@ JavaScript toolchains matched each other.
 behaviour change, but the old value was lossy.
 
 ### A rewrite pass between parsing and code generation
-**Decision**: `rewrite.rs` is a separate pass that runs on the AST between
+**Decision**: `rewrite/` is a separate pass that runs on the AST between
 `parser::parse` and `codegen::compile`, rather than an optimisation inside
 the code generator.
 **Why**: the code generator is the largest and most delicate module in the
 project, and an optimisation does not belong in the middle of it. Keeping the
-rewrite on the AST means `codegen.rs` needs no knowledge of it at all, and
+rewrite on the AST means `codegen/` needs no knowledge of it at all, and
 the rewrite can be tested on its own — by inspecting the AST it produces.
 **Trade-off**: the compiler has one more stage, and the rewrite can only use
 what the AST knows. In particular it cannot see types, so it has to be
 conservative about which shapes it accepts: it rewrites only a call it can
 see is self-recursive, in tail position, with a decreasing argument.
+
+### The three biggest modules are directories
+**Decision**: `parser/`, `rewrite/` and `codegen/` are directories of files
+rather than single files, and no file is much over 400 lines.
+**Why**: a 1,400-line file is hard to read, hard to review, and hard to
+change safely. The split is along the seams the modules already had — the
+statement forms and the precedence levels in the parser, the two rewrites,
+the runtime shim and the two halves of the code generator — so no new
+abstraction was introduced and no behaviour changed.
+**Trade-off**: a directory module needs `mod.rs` (or a `foo/mod.rs`), the
+methods that cross a file boundary need `pub(super)`, and the tests move into
+their own file. The Mature Module Policy applies here too: `codegen/` was
+covered by 46 unit tests before the split, and the split is a *move*, so the
+tests are what proves it changed nothing.
 
 ### Tail-call elimination is narrow on purpose
 **Decision**: the rewrite fires only on a shape it can recognise exactly — a

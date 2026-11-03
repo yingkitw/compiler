@@ -135,16 +135,16 @@ error: cannot initialize 'x: number' with a value of type boolean
 
 ```
  source ──lex──▶ tokens ──parse──▶ AST ──rewrite──▶ AST ──codegen──▶ object ──cc──▶ binary
-  lexer.rs      parser.rs   ast.rs   rewrite.rs   ast.rs   codegen.rs  (Cranelift) runtime.c
+  lexer.rs      parser/    ast.rs   rewrite/    ast.rs   codegen/   (Cranelift)  runtime.c
 ```
 
 | Stage | What happens |
 |---|---|
 | `src/lexer.rs` | Tokenizer. Every token carries its source line, so diagnostics point at a line |
-| `src/parser.rs` | Recursive descent, one method per precedence level |
+| `src/parser/` | Recursive descent — `stmt.rs` for the statement forms, `expr.rs` for one method per precedence level |
 | `src/ast.rs` | Shared AST types — the contract between parser and codegen |
-| `src/rewrite.rs` | Source-to-source optimisations: a self-recursive call in tail position becomes a loop, and a linear recurrence becomes a loop as well |
-| `src/codegen.rs` | One pass that type-checks **and** emits Cranelift IR: SSA variables, basic blocks for `if`/`while`, and for short-circuit `&&` / `\|\|` |
+| `src/rewrite/` | Source-to-source optimisations: a self-recursive call in tail position becomes a loop, and a linear recurrence becomes a loop as well |
+| `src/codegen/` | One pass that type-checks **and** emits Cranelift IR: SSA variables, basic blocks for `if`/`while`, and for short-circuit `&&` / `\|\|` |
 
 Four design points worth knowing:
 
