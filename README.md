@@ -193,11 +193,11 @@ fails if they disagree.
 | | compiler | scriptc | compiler v0.1.0 | deno compile | bun --compile | tsrust + node | tsc + node |
 |---|---|---|---|---|---|---|---|
 | **Artifact size** | **33.8 KiB** | 109 KiB | 32.9 KiB | 65.1 MiB | 60.5 MiB | 133 B JS | 119 B JS |
-| **Startup** | **23.1 ms** | 24.8 ms | 23.2 ms | 38.7 ms | 32.2 ms | 163 ms | 149 ms |
-| **Compile time** | **0.20 s** | 0.11 s | 0.17 s | 1.03 s | 0.83 s | 0.41 s | 0.36 s |
-| **fib(35) runtime** | **22.6 ms** | 47.8 ms | 69.2 ms | 124 ms | 83 ms | 236 ms | 241 ms |
-| **fib(35) unrewritten** | 67.8 ms | **49.0 ms** | 69.4 ms | 125 ms | 81 ms | 245 ms | 239 ms |
-| **loop(1e8) runtime** | **122 ms** | 120 ms | 124 ms | 133 ms | 135 ms | 248 ms | 247 ms |
+| **Startup** | **24.4 ms** | 25.9 ms | 22.2 ms | 32.1 ms | 34.3 ms | 149 ms | 157 ms |
+| **Compile time** | **0.19 s** | 0.11 s | 0.19 s | 1.00 s | 0.98 s | 0.45 s | 0.39 s |
+| **fib(35) runtime** | **28.2 ms** | 49.9 ms | 69.7 ms | 130 ms | 89 ms | 246 ms | 248 ms |
+| **fib(35) unrewritten** | 69.9 ms | **48.3 ms** | 70.7 ms | 130 ms | 87 ms | 244 ms | 251 ms |
+| **loop(1e8) runtime** | 129 ms | **125 ms** | 129 ms | 139 ms | 142 ms | 259 ms | 275 ms |
 
 Full numbers, methodology, and the raw report: [`bench/RESULTS.md`](bench/RESULTS.md).
 Regenerate with `python3 scripts/bench.py`.
@@ -205,7 +205,7 @@ Regenerate with `python3 scripts/bench.py`.
 The **Startup** row is the one sensitive to the host: spawning a process costs
 ~5 ms on an idle machine and ~20 ms on a busy one, which changes every ratio
 without changing the differences. The committed report was taken with a load
-average of 11.5 and a 17.3 ms spawn floor, so the startup row above is a
+average of 22.5 and a 21.5 ms spawn floor, so the startup row above is a
 busy-host number; on an idle host it reads about a third of that. The report
 records the load average of the run it came from, so you can tell which
 numbers to trust.
@@ -225,9 +225,9 @@ binary instead of 60 MiB, ~2000x smaller, and ~1.4x faster to start.
 same program twice: written the way a programmer writes it, and written so
 that no rewrite can fire on it. In the first form our compiler turns the
 recurrence into a loop, and the whole program — 2^35 calls as written —
-finishes in the time it takes to start the process: **22.6 ms against
-scriptc's 47.8 ms**. In the second form, where the recursion survives, the
-gap is the other way round: **67.8 ms against scriptc's 49.0 ms**, because
+finishes in the time it takes to start the process: **28 ms against
+scriptc's 50 ms**. In the second form, where the recursion survives, the
+gap is the other way round: **70 ms against scriptc's 48 ms**, because
 scriptc rewrites more shapes than we do.
 
 **Where we lose.** The honest comparison is [`scriptc`](https://scriptc.dev)
@@ -258,9 +258,9 @@ illustration of what this project is doing differently: we do not emit
 JavaScript at all.
 
 **The `int` type.** `int` (64-bit) keeps arithmetic exact past 2^53 and is
-measurably faster where arithmetic is the work: **1.53x** on an arithmetic-only
+measurably faster where arithmetic is the work: **1.57x** on an arithmetic-only
 loop and **1.94x** when a function call happens per iteration. It does not help
-on recursion (1.01x on the unrewritten fibonacci), which is the evidence that
+on recursion (1.07x on the unrewritten fibonacci), which is the evidence that
 the gap to scriptc is not about arithmetic. It is not a cross-toolchain
 comparison — the JavaScript toolchains have no integer type.
 

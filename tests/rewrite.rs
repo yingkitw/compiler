@@ -343,6 +343,97 @@ fn a_recurrence_means_the_same_program_as_the_loop_it_replaces() {
              }\n\
              print(f(15, 3));\n",
         ),
+        (
+            "an_extra_term",
+            "function f(n: int): int {\n\
+             \x20 if (n < 2) { return n; }\n\
+             \x20 return f(n - 1) + f(n - 2) + 1;\n\
+             }\n\
+             print(f(15));\n",
+            "function f(n: int): int {\n\
+             \x20 if (n < 2) { return n; }\n\
+             \x20 let a = f(n - 1);\n\
+             \x20 let b = f(n - 2);\n\
+             \x20 return a + b + 1;\n\
+             }\n\
+             print(f(15));\n",
+        ),
+        (
+            "a_term_that_reads_the_parameter",
+            "function f(n: int): int {\n\
+             \x20 if (n < 2) { return n; }\n\
+             \x20 return f(n - 1) + f(n - 2) + n;\n\
+             }\n\
+             print(f(12));\n",
+            "function f(n: int): int {\n\
+             \x20 if (n < 2) { return n; }\n\
+             \x20 let a = f(n - 1);\n\
+             \x20 let b = f(n - 2);\n\
+             \x20 return a + b + n;\n\
+             }\n\
+             print(f(12));\n",
+        ),
+        (
+            "three_calls",
+            "function f(n: int): int {\n\
+             \x20 if (n < 3) { return 1; }\n\
+             \x20 return f(n - 1) + f(n - 2) + f(n - 3);\n\
+             }\n\
+             print(f(12));\n",
+            "function f(n: int): int {\n\
+             \x20 if (n < 3) { return 1; }\n\
+             \x20 let a = f(n - 1);\n\
+             \x20 let b = f(n - 2);\n\
+             \x20 let c = f(n - 3);\n\
+             \x20 return a + b + c;\n\
+             }\n\
+             print(f(12));\n",
+        ),
+        (
+            "a_wider_gap",
+            "function f(n: int): int {\n\
+             \x20 if (n < 3) { return n; }\n\
+             \x20 return f(n - 1) + f(n - 3);\n\
+             }\n\
+             print(f(12));\n",
+            "function f(n: int): int {\n\
+             \x20 if (n < 3) { return n; }\n\
+             \x20 let a = f(n - 1);\n\
+             \x20 let b = f(n - 3);\n\
+             \x20 return a + b;\n\
+             }\n\
+             print(f(12));\n",
+        ),
+        (
+            "sparse_offsets",
+            "function f(n: int): int {\n\
+             \x20 if (n < 4) { return n; }\n\
+             \x20 return f(n - 2) + f(n - 3);\n\
+             }\n\
+             print(f(14));\n",
+            "function f(n: int): int {\n\
+             \x20 if (n < 4) { return n; }\n\
+             \x20 let a = f(n - 2);\n\
+             \x20 let b = f(n - 3);\n\
+             \x20 return a + b;\n\
+             }\n\
+             print(f(14));\n",
+        ),
+        (
+            "coefficients",
+            "function f(n: int): int {\n\
+             \x20 if (n < 2) { return 1; }\n\
+             \x20 return 2 * f(n - 1) + 3 * f(n - 2);\n\
+             }\n\
+             print(f(10));\n",
+            "function f(n: int): int {\n\
+             \x20 if (n < 2) { return 1; }\n\
+             \x20 let a = 2 * f(n - 1);\n\
+             \x20 let b = 3 * f(n - 2);\n\
+             \x20 return a + b;\n\
+             }\n\
+             print(f(10));\n",
+        ),
     ];
     for (name, recurrence, spelled_out) in cases {
         assert_eq!(

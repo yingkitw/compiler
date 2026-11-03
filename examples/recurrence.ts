@@ -30,3 +30,12 @@ function product(n: int): int {
     return product(n - 1) * product(n - 2);
 }
 print(product(10));   // 1
+
+// The rewrite is not limited to two terms or to neighbouring ones: this
+// recurrence calls itself one and three steps back, and adds a term that
+// reads the parameter.
+function sparse(n: int): int {
+    if (n < 4) { return n; }
+    return sparse(n - 1) + sparse(n - 3) + n;
+}
+print(sparse(12));   // 324

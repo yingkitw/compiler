@@ -231,20 +231,23 @@ performs the same additions, in the same order, as the recursion does.
 
 The rewrite fires only when
 
-- the function returns a `number` or an `int`,
+- the function returns a `number` or an `int`, and its first parameter is a
+  number,
 - the base case is the first statement of the body, with the same rules as
   the tail-call rewrite,
 - the base expression has no side effects. The source program evaluates it
-  once per leaf of the call tree; the rewrite evaluates it exactly twice, for
-  the two starting values,
-- the rest of the body is a single `return` whose expression combines *two*
-  self-calls — one at `n - 1` and one at `n - 2` — with a single `+`, `-` or
-  `*`, and nothing else, and
+  once per leaf of the call tree; the rewrite evaluates it once per starting
+  value,
+- the rest of the body is a single `return` whose expression calls the
+  function at least once, always at a constant offset — `n - 1`, `n - 3`, … —
+  and whose every other part is free of side effects, and
 - every other argument of those calls is a parameter passed on unchanged.
 
-The offsets are exactly one and two because the loop keeps the two previous
-values. A recurrence with a wider gap (`f(n - 1) + f(n - 3)`) needs more
-accumulators, and is left alone.
+The loop keeps as many values as the widest offset needs, so a recurrence
+with a gap (`f(n - 1) + f(n - 3)`) is rewritten too, as is one with a third
+term (`f(n - 1) + f(n - 2) + 1`) or a coefficient (`2 * f(n - 1)`). The
+expression's shape is preserved exactly, so the answer is the same, bit for
+bit.
 
 ### Type rules
 

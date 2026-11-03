@@ -40,42 +40,56 @@
 //! program from exponential to linear, so the shape it accepts has to be
 //! recognised exactly. It fires only when
 //!
-//! * the function returns a `number` or an `int`,
+//! * the function returns a `number` or an `int`, and its first parameter is
+//!   a number — the loop compares the two,
 //! * the base case is the first statement of the body, with the same rules
 //!   as the tail-call rewrite — a statement before it would run once per
 //!   recursion level in the source program and once in the rewritten one,
 //! * the base expression has no side effects. The source program evaluates
-//!   it once per leaf of the call tree; the rewrite evaluates it exactly
-//!   twice, for the two starting values,
-//! * the rest of the body is a single `return` whose expression combines
-//!   *two* self-calls — one at `p0 - 1` and one at `p0 - 2` — with a single
-//!   arithmetic operator, and nothing else, and
+//!   it once per leaf of the call tree; the rewrite evaluates it once per
+//!   starting value,
+//! * the rest of the body is a single `return` whose expression calls the
+//!   function at least once, always at a constant offset — `p0 - 1`,
+//!   `p0 - 3`, … — and whose every other part is free of side effects, and
 //! * every other argument of those calls is a parameter passed on unchanged.
 //!
-//! The offsets are exactly one and two because the loop keeps the two
-//! previous values; a recurrence with a wider gap (`f(p0 - 1) + f(p0 - 3)`)
-//! needs more accumulators, and is left alone.
+//! The loop keeps as many values as the widest offset needs, so a
+//! recurrence with a gap (`f(p0 - 1) + f(p0 - 3)`) is rewritten too. The
+//! expression's shape is preserved exactly — the loop performs the same
+//! operations, in the same order, on the same values — so the answer is the
+//! same, bit for bit.
+//!
+//! The loop counts with an induction variable of its own rather than with
+//! the parameter: the recursion's level and the loop's index are not the
+//! same number, and a term that reads the parameter must see the level's
+//! own value.
 
 use crate::ast::*;
 
-use super::common::{is_pure, is_var, names_in_use, fresh_names};
+use super::common::{fresh_name, fresh_numbered, is_pure, is_var, names_in_use};
 
 // --- Linear recurrences -----------------------------------------------------
 
-/// The names of the generated accumulators. They are checked against the
-/// names already in use, so they cannot collide with a program's own
-/// variables.
-const REC_NAMES: [&str; 3] = ["__ts_rec_a", "__ts_rec_b", "__ts_rec_c"];
+/// The base name of the generated accumulators — one per value the loop has
+/// to keep. The names are checked against the names already in use, so they
+/// cannot collide with a program's own variables.
+const REC_ACC: &str = "__ts_rec_v";
 
-/// A linear recurrence that the rewrite knows how to turn into a loop.
+/// The name of the generated induction variable.
+const REC_INDEX: &str = "__ts_rec_i";
+
+/// The name of the generated value the loop computes.
+const REC_NEXT: &str = "__ts_rec_c";
+
+/// A self-recursive function whose values satisfy a recurrence.
 struct Recurrence {
     /// The largest argument that reaches the base case.
     threshold: i64,
-    /// How the two recursive calls are combined.
-    op: BinOp,
-    /// Whether the *older* call — the one with the larger offset — is the
-    /// left operand of the expression.
-    older_on_left: bool,
+    /// How many values the loop has to keep: the largest offset the
+    /// expression calls the function at.
+    width: i64,
+    /// The expression that computes the next value.
+    tail: Expr,
 }
 
 /// Rewrite every linear recurrence in the program into a loop.
@@ -103,16 +117,23 @@ fn rewrite_recurrence(
     let Some(rec) = match_recurrence(name, params, ret, body) else {
         return;
     };
-    let Some(ty) = ret else { return };
+    let Some(ty) = ret else { return; };
 
-    let names = fresh_names(&REC_NAMES, &names_in_use(params, body));
-    let a_name = &names[0];
-    let b_name = &names[1];
-    let c_name = &names[2];
+    let used = names_in_use(params, body);
+    let width = rec.width as usize;
+    let accs = fresh_numbered(REC_ACC, width, &used);
+    let index = fresh_name(REC_INDEX, &used);
+    let next = fresh_name(REC_NEXT, &used);
     let p0 = &params[0].0;
 
-    // The two starting values: f(threshold - 1) and f(threshold). Both reach
-    // the base case, so each costs one call.
+    // The loop's update: the source expression with every self-call
+    // replaced by the accumulator that holds that value.
+    let Some(update) = build_loop_expr(&rec.tail, name, params, &accs, &index, p0) else {
+        return;
+    };
+
+    // The starting values: f(threshold - width + 1) ... f(threshold). All of
+    // them reach the base case, so each costs one call.
     let call_at = |value: i64| Expr::Call {
         name: name.to_string(),
         args: {
@@ -124,74 +145,70 @@ fn rewrite_recurrence(
         },
     };
 
-    // The loop's update combines the newer value (f(p0 - 1), kept in `b`)
-    // with the older one (f(p0 - 2), kept in `a`), in the order the source
-    // expression had them.
-    let (lhs, rhs) = if rec.older_on_left {
-        (Expr::Var(a_name.clone()), Expr::Var(b_name.clone()))
-    } else {
-        (Expr::Var(b_name.clone()), Expr::Var(a_name.clone()))
-    };
-    let update = Expr::Bin {
-        op: rec.op,
-        lhs: Box::new(lhs),
-        rhs: Box::new(rhs),
-    };
-
-    let loop_body = vec![
-        Stmt::Let {
-            name: c_name.clone(),
-            ty: Some(ty),
-            init: Some(update),
-            mutable: true,
-        },
-        Stmt::Expr(Expr::Assign {
-            name: a_name.clone(),
-            value: Box::new(Expr::Var(b_name.clone())),
-        }),
-        Stmt::Expr(Expr::Assign {
-            name: b_name.clone(),
-            value: Box::new(Expr::Var(c_name.clone())),
-        }),
-        // The parameter counts the values still to be computed.
-        Stmt::Expr(Expr::Assign {
-            name: p0.clone(),
-            value: Box::new(Expr::Bin {
-                op: BinOp::Sub,
-                lhs: Box::new(Expr::Var(p0.clone())),
-                rhs: Box::new(Expr::Num(NumLit::new(1.0, Some(1)))),
-            }),
-        }),
-    ];
-
     // The base case stays exactly as it was.
-    let out: Vec<Stmt> = vec![
-        body[0].clone(),
-        Stmt::Let {
-            name: a_name.clone(),
+    let mut out: Vec<Stmt> = vec![body[0].clone()];
+
+    // The accumulators, oldest first: the first holds the value from the
+    // longest ago, the last the most recent one.
+    for (i, acc) in accs.iter().enumerate() {
+        let value = rec.threshold - (rec.width - 1 - i as i64);
+        out.push(Stmt::Let {
+            name: acc.clone(),
             ty: Some(ty),
-            init: Some(call_at(rec.threshold - 1)),
+            init: Some(call_at(value)),
             mutable: true,
+        });
+    }
+
+    // The induction variable counts the values still to be computed. It is
+    // not the parameter: the recursion's level and the loop's index are not
+    // the same number, and a term that reads the parameter must see the
+    // level's own value.
+    let Some(first) = rec.threshold.checked_add(1) else {
+        return;
+    };
+    out.push(Stmt::Let {
+        name: index.clone(),
+        ty: Some(params[0].1),
+        init: Some(Expr::Num(NumLit::new(first as f64, Some(first)))),
+        mutable: true,
+    });
+
+    // The loop body: compute the next value, shift the window, count on.
+    let mut loop_body = vec![Stmt::Let {
+        name: next.clone(),
+        ty: Some(ty),
+        init: Some(update),
+        mutable: true,
+    }];
+    for i in 0..width.saturating_sub(1) {
+        loop_body.push(Stmt::Expr(Expr::Assign {
+            name: accs[i].clone(),
+            value: Box::new(Expr::Var(accs[i + 1].clone())),
+        }));
+    }
+    loop_body.push(Stmt::Expr(Expr::Assign {
+        name: accs[width - 1].clone(),
+        value: Box::new(Expr::Var(next.clone())),
+    }));
+    loop_body.push(Stmt::Expr(Expr::Assign {
+        name: index.clone(),
+        value: Box::new(Expr::Bin {
+            op: BinOp::Add,
+            lhs: Box::new(Expr::Var(index.clone())),
+            rhs: Box::new(Expr::Num(NumLit::new(1.0, Some(1)))),
+        }),
+    }));
+
+    out.push(Stmt::While {
+        cond: Expr::Bin {
+            op: BinOp::Le,
+            lhs: Box::new(Expr::Var(index.clone())),
+            rhs: Box::new(Expr::Var(p0.clone())),
         },
-        Stmt::Let {
-            name: b_name.clone(),
-            ty: Some(ty),
-            init: Some(call_at(rec.threshold)),
-            mutable: true,
-        },
-        Stmt::While {
-            cond: Expr::Bin {
-                op: BinOp::Gt,
-                lhs: Box::new(Expr::Var(p0.clone())),
-                rhs: Box::new(Expr::Num(NumLit::new(
-                    rec.threshold as f64,
-                    Some(rec.threshold),
-                ))),
-            },
-            body: loop_body,
-        },
-        Stmt::Return(Some(Expr::Var(b_name.clone()))),
-    ];
+        body: loop_body,
+    });
+    out.push(Stmt::Return(Some(Expr::Var(accs[width - 1].clone()))));
 
     *body = out;
 }
@@ -205,6 +222,12 @@ fn match_recurrence(
 ) -> Option<Recurrence> {
     // Only a number or an int can be combined arithmetically.
     match ret {
+        Some(Type::Number) | Some(Type::Int) => {}
+        _ => return None,
+    }
+    // The parameter the recurrence counts down has to be a number, because
+    // the loop compares it with its own index.
+    match params.first().map(|(_, t)| *t) {
         Some(Type::Number) | Some(Type::Int) => {}
         _ => return None,
     }
@@ -230,7 +253,7 @@ fn match_recurrence(
     };
     // The base expression must be free of side effects: the source program
     // evaluates it once per leaf of the call tree, the rewrite evaluates it
-    // exactly twice, for the two starting values.
+    // once per starting value.
     if !is_pure(base) {
         return None;
     }
@@ -240,77 +263,145 @@ fn match_recurrence(
         return None;
     };
 
-    // The expression combines two self-calls and nothing else.
-    let Expr::Bin { op, lhs, rhs } = tail else {
-        return None;
-    };
-    let older_on_left = if is_call_at_offset(lhs, name, params, 2) && is_call_at_offset(rhs, name, params, 1) {
-        true
-    } else if is_call_at_offset(lhs, name, params, 1) && is_call_at_offset(rhs, name, params, 2) {
-        false
-    } else {
-        return None;
-    };
-    // Only an operation with an identity can be carried along a loop.
-    if !matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul) {
+    // The expression must call the function, at constant offsets, and
+    // everything else in it must be free of side effects.
+    let mut offsets = Vec::new();
+    if !collect_offsets(tail, name, params, &mut offsets) {
         return None;
     }
+    let width = *offsets.iter().max()?;
 
     let threshold = base_threshold(cond, &params[0].0)?;
 
     Some(Recurrence {
         threshold,
-        op: *op,
-        older_on_left,
+        width,
+        tail: tail.clone(),
     })
 }
 
-/// Is `expr` a call to `name` whose first argument is the first parameter
-/// minus `offset`, and whose other arguments are the other parameters passed
-/// on unchanged?
-fn is_call_at_offset(
+/// Collect the offsets the expression calls the function at, and check that
+/// everything else in it is free of side effects.
+fn collect_offsets(
     expr: &Expr,
     name: &str,
     params: &[(String, Type)],
-    offset: i64,
+    offsets: &mut Vec<i64>,
 ) -> bool {
-    let Expr::Call {
-        name: callee,
-        args,
-    } = expr
-    else {
-        return false;
-    };
-    if callee != name || args.len() != params.len() {
-        return false;
+    match expr {
+        Expr::Call {
+            name: callee,
+            args,
+        } if callee == name => match call_offset(args, params) {
+            Some(offset) => {
+                offsets.push(offset);
+                true
+            }
+            None => false,
+        },
+        // A call to another function has side effects the rewrite would
+        // reorder, so it is not accepted.
+        Expr::Call { .. } => false,
+        Expr::Num(_) | Expr::Bool(_) | Expr::Var(_) => true,
+        Expr::Bin { lhs, rhs, .. } => {
+            collect_offsets(lhs, name, params, offsets)
+                && collect_offsets(rhs, name, params, offsets)
+        }
+        Expr::Un { expr, .. } => collect_offsets(expr, name, params, offsets),
+        // An assignment has a side effect.
+        Expr::Assign { .. } => false,
     }
-    // The first argument steps down by `offset`.
+}
+
+/// Build the expression the loop computes: the source expression with every
+/// self-call replaced by the accumulator that holds that value, and the
+/// parameter replaced by the induction variable — the loop counts a
+/// different index than the recursion does.
+fn build_loop_expr(
+    expr: &Expr,
+    name: &str,
+    params: &[(String, Type)],
+    accs: &[String],
+    index: &str,
+    param: &str,
+) -> Option<Expr> {
+    match expr {
+        Expr::Call {
+            name: callee,
+            args,
+        } if callee == name => {
+            let offset = call_offset(args, params)?;
+            // The value from `offset` steps back is the one the
+            // accumulator holds.
+            let slot = accs.len().checked_sub(offset as usize)?;
+            Some(Expr::Var(accs.get(slot)?.clone()))
+        }
+        Expr::Num(_) | Expr::Bool(_) => Some(expr.clone()),
+        Expr::Var(v) => {
+            if v == param {
+                Some(Expr::Var(index.to_string()))
+            } else {
+                Some(expr.clone())
+            }
+        }
+        Expr::Bin { op, lhs, rhs } => {
+            let lhs = build_loop_expr(lhs, name, params, accs, index, param)?;
+            let rhs = build_loop_expr(rhs, name, params, accs, index, param)?;
+            Some(Expr::Bin {
+                op: *op,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            })
+        }
+        Expr::Un { op, expr } => {
+            let e = build_loop_expr(expr, name, params, accs, index, param)?;
+            Some(Expr::Un {
+                op: *op,
+                expr: Box::new(e),
+            })
+        }
+        Expr::Call { .. } | Expr::Assign { .. } => None,
+    }
+}
+
+/// The offset of a self-call: how much smaller its first argument is than
+/// the first parameter.
+fn call_offset(args: &[Expr], params: &[(String, Type)]) -> Option<i64> {
+    if args.len() != params.len() {
+        return None;
+    }
     let Expr::Bin {
         op: BinOp::Sub,
         lhs,
         rhs,
     } = &args[0]
     else {
-        return false;
+        return None;
     };
     let Expr::Var(v) = &**lhs else {
-        return false;
+        return None;
     };
     if *v != params[0].0 {
-        return false;
+        return None;
     }
     let Expr::Num(lit) = &**rhs else {
-        return false;
+        return None;
     };
-    if lit.int != Some(offset) {
-        return false;
+    // The offset must be a positive, exact integer: the recursion descends.
+    let offset = lit.int?;
+    if offset <= 0 {
+        return None;
     }
     // Every other argument is a parameter, passed on unchanged.
-    params
+    if !params
         .iter()
         .enumerate()
         .skip(1)
         .all(|(i, (pname, _))| matches!(&args[i], Expr::Var(v) if v == pname))
+    {
+        return None;
+    }
+    Some(offset)
 }
 
 /// The largest argument that reaches the base case, from a condition that

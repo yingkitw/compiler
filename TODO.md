@@ -26,17 +26,27 @@
 - [x] **Linear recurrences become loops** — a function defined in terms of its
       own previous values (`fib(n) = fib(n-1) + fib(n-2)`) is exponential in
       the source program: the tree of calls has 2^depth leaves. The rewrite
-      turns it into a loop with two accumulators, so the same program
-      computes the same answer — bit for bit, the loop performs the same
-      additions in the same order — in linear time and in constant stack
-      space. `fib(90)` is 2^90 calls as written and ninety after the rewrite.
-      This is the classical transform (Kapur, Kogge & Palem, 1986); the
-      recipe and the scoping are in the brainstorm below. It fires only on a
-      shape it can recognise exactly: the two calls must be at offsets one
-      and two, combined by a single operator, with nothing else in the
-      expression, and the base expression must have no side effects (the
-      source program evaluates it once per leaf; the rewrite evaluates it
-      exactly twice, for the two starting values)
+      turns it into a loop with one accumulator per value the recurrence
+      needs, so the same program computes the same answer — bit for bit, the
+      loop performs the same operations in the same order on the same values —
+      in linear time and in constant stack space. `fib(90)` is 2^90 calls as
+      written and ninety after the rewrite. This is the classical transform
+      (Kapur, Kogge & Palem, 1986); the recipe and the scoping are in the
+      brainstorm below. It fires only on a shape it can recognise exactly: the
+      calls must be at constant offsets, everything else in the expression
+      must be free of side effects (the rewrite evaluates it in the opposite
+      order), and the base expression must have no side effects (the source
+      program evaluates it once per leaf, the rewrite once per starting
+      value)
+- [x] **The recurrence rewrite covers the wider shapes** — the first version
+      handled exactly two calls at offsets one and two. It now handles any
+      number of terms, any constant offsets (`f(n-1) + f(n-3)`), a third
+      term that reads the parameter (`f(n-1) + f(n-2) + n`), and a
+      coefficient (`2 * f(n-1) + 3 * f(n-2)`) — the expression's shape is
+      preserved exactly, so the answer stays bit for bit the same. The loop
+      keeps one accumulator per value the recurrence needs, and counts with
+      an induction variable of its own, because the recursion's level and
+      the loop's index are not the same number
 - [x] **Tail-call elimination** — a self-recursive call in tail position
       becomes a loop, so the recursion costs one frame instead of one per
       level. A recursion of ten million levels now runs in constant stack
@@ -94,14 +104,14 @@
       lines. The split was a *move*, verified by the test suite — the object
       files it produces are byte-for-byte identical to the ones the single
       files produced
-- [x] **113 inline unit tests + 29 integration tests** — all passing; `cargo clippy
+- [x] **117 inline unit tests + 29 integration tests** — all passing; `cargo clippy
       --all-targets` exits 0; doc-sync enforced by `tests/docs_sync.rs`
 - [x] **Inline unit tests for the lexer, parser, and type rules** — 12 lexer tests
       (token kinds, comments, line tracking, exact integer literals, lex errors),
       23 parser tests (precedence, associativity, statement forms, parse errors),
       46 codegen tests (every type rule in `FnGen`, the `int` type, the runtime
       entry points, plus acceptance cases for scoping, shadowing, recursion, and
-      forward references), and 32 rewrite tests (every shape the tail-call and
+      forward references), and 36 rewrite tests (every shape the tail-call and
       recurrence rewrites accept, and every shape they must refuse)
 - [x] **Wiring guard** — a test that drives one program per AST variant and
       asserts the compiler never panics, plus a test that rejected programs
@@ -133,16 +143,14 @@
 ## Next
 
 ### High priority
-- [ ] **Widen the recurrence rewrite.** The transform now fires only on a
-      recurrence whose two calls are at offsets one and two, combined by a
-      single operator. The literature's refinements are known and cheap to
-      implement on top of it:
-      - *hopping backwards over the offsets*, so that a sparse recurrence
-        (`f(n-13) + f(n-17)`) computes only the values it actually needs,
-      - more than two terms (`f(n-1) + f(n-2) + g(n)`), with the extra term
-        evaluated at the induction variable,
-      - a recurrence with a coefficient (`f(n-1) + 2 * f(n-2)`).
-      The shape is the same; the accumulator count and the update grow.
+- [ ] **Hop backwards over the offsets.** The rewrite now keeps one value per
+      offset the recurrence uses, so `f(n - 1) + f(n - 17)` keeps seventeen
+      values and computes every one of them. The literature's refinement
+      computes only the values that are actually needed: the differences
+      between the offsets (here 16) are the spacing of the values that
+      matter, so the loop can step by 16 and keep two. It is the difference
+      between an O(n) loop with 17 accumulators and one with 2 — worth doing
+      for the sparse recurrences it applies to, and not much else.
       Evidence and method: MEMORY.md → *The Chain Shape Is Where the Rewrite
       Shows Itself*; `scripts/bench_shape.py`.
 - [ ] **Strings** — add a `string` type (UTF-8 bytes + length, not a Rust
@@ -305,8 +313,7 @@ Recorded per AGENTS.md Step 7. Total is /30.
   compiled to a loop — so the fibonacci workload, which scriptc only
   partially optimises, is now **faster on our side than on scriptc's**. The
   one remaining reason this is not 5: there is still no cross-platform or
-  UB/valgrind pass.
-- *Maintainability 5/5*: the three biggest modules are directories, and no file
+  UB/valgrind pass.- *Maintainability 5/5*: the three biggest modules are directories, and no file
   is over about 450 lines: `parser/` (the statement forms and the precedence
   levels), `rewrite/` (the two rewrites and the predicates they share), and
   `codegen/` (the type lattice, the C shim, and the two halves of the code

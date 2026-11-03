@@ -114,17 +114,25 @@ much over 400 lines:
 - **Linear recurrences**: a function defined in terms of its own previous
   values (`return f(p0 - 1) + f(p0 - 2);`) is exponential in the source
   program — the tree of calls has 2^depth leaves. The rewrite turns it into a
-  loop with two accumulators:
+  loop with one accumulator per value the recurrence needs:
   ```
   if (p0 < 2) { return base; }        // the base case, unchanged
-  let a = f(0);                        // the two starting values
+  let a = f(0);                        // the starting values, one per offset
   let b = f(1);
-  while (p0 > 1) { let c = b + a; a = b; b = c; p0 = p0 - 1; }
+  let i = 2;                           // the induction variable
+  while (i <= p0) {
+      let c = b + a;
+      a = b;
+      b = c;
+      i = i + 1;
+  }
   return b;
   ```
-  The loop performs the same additions, in the same order, as the recursion
-  does, so the answer is bit for bit the same — in linear time, and in
-  constant stack space.
+  The loop performs the same operations, in the same order, on the same
+  values, so the answer is bit for bit the same — in linear time, and in
+  constant stack space. The expression's shape is preserved exactly, so a
+  recurrence with a third term, a coefficient or a wider gap is rewritten
+  the same way.
 - **Why it matters**: a tail call does not need the frame it was made in, so
   the recursion costs one frame instead of one per level. A recursion of ten
   million levels now runs in constant stack space; before, it died with

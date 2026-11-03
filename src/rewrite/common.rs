@@ -145,9 +145,12 @@ pub(crate) fn fresh_name(base: &str, used: &[String]) -> String {
     unreachable!("an unused name always exists")
 }
 
-/// Pick several names that the program does not already use.
-pub(crate) fn fresh_names(bases: &[&str], used: &[String]) -> Vec<String> {
-    bases.iter().map(|base| fresh_name(base, used)).collect()
+/// Pick `count` names that the program does not already use, numbered from
+/// zero.
+pub(crate) fn fresh_numbered(base: &str, count: usize, used: &[String]) -> Vec<String> {
+    (0..count)
+        .map(|i| fresh_name(&format!("{base}{i}"), used))
+        .collect()
 }
 
 /// The helpers the rewrite modules' tests share.
