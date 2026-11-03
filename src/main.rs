@@ -1,6 +1,6 @@
 //! tsc — a tiny TypeScript-subset compiler that produces native binaries.
 //!
-//! Usage: tsc <input.ts> [-o <output>] [-c]
+//! Usage: `tsc <input.ts> [-o <output>] [-c]`
 
 mod ast;
 mod codegen;
