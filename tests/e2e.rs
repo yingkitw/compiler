@@ -482,6 +482,138 @@ fn a_void_tail_recursion_can_be_much_deeper_than_the_stack() {
 }
 
 #[test]
+fn recurrence() {
+    assert_eq!(
+        compile_and_run("recurrence"),
+        "2880067194370816120\n\
+         190392490709135\n\
+         -1\n\
+         1\n"
+    );
+}
+
+#[test]
+fn a_recurrence_means_the_same_program_as_the_loop_it_replaces() {
+    // A linear recurrence — a function defined in terms of its own previous
+    // values — is turned into a loop. The only thing that may not change is
+    // what the program prints, so each shape is compiled twice: once with
+    // the recurrence, and once as the same program written so that no
+    // rewrite can fire on it.
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            "fibonacci",
+            "function f(n: int): int {\n\
+             \x20 if (n < 2) { return n; }\n\
+             \x20 return f(n - 1) + f(n - 2);\n\
+             }\n\
+             print(f(20));\n",
+            "function f(n: int): int {\n\
+             \x20 if (n < 2) { return n; }\n\
+             \x20 let a = f(n - 1);\n\
+             \x20 let b = f(n - 2);\n\
+             \x20 return a + b;\n\
+             }\n\
+             print(f(20));\n",
+        ),
+        (
+            "swapped_calls",
+            "function f(n: int): int {\n\
+             \x20 if (n < 2) { return n; }\n\
+             \x20 return f(n - 2) + f(n - 1);\n\
+             }\n\
+             print(f(20));\n",
+            "function f(n: int): int {\n\
+             \x20 if (n < 2) { return n; }\n\
+             \x20 let a = f(n - 1);\n\
+             \x20 let b = f(n - 2);\n\
+             \x20 return a + b;\n\
+             }\n\
+             print(f(20));\n",
+        ),
+        (
+            "inclusive_base_case",
+            "function f(n: int): int {\n\
+             \x20 if (n <= 1) { return 1; }\n\
+             \x20 return f(n - 1) + f(n - 2);\n\
+             }\n\
+             print(f(20));\n",
+            "function f(n: int): int {\n\
+             \x20 if (n <= 1) { return 1; }\n\
+             \x20 let a = f(n - 1);\n\
+             \x20 let b = f(n - 2);\n\
+             \x20 return a + b;\n\
+             }\n\
+             print(f(20));\n",
+        ),
+        (
+            "base_case_uses_the_parameter",
+            "function f(n: int): int {\n\
+             \x20 if (n < 2) { return n * 10; }\n\
+             \x20 return f(n - 1) + f(n - 2);\n\
+             }\n\
+             print(f(12));\n",
+            "function f(n: int): int {\n\
+             \x20 if (n < 2) { return n * 10; }\n\
+             \x20 let a = f(n - 1);\n\
+             \x20 let b = f(n - 2);\n\
+             \x20 return a + b;\n\
+             }\n\
+             print(f(12));\n",
+        ),
+        (
+            "multiplication",
+            "function f(n: int): int {\n\
+             \x20 if (n < 2) { return 1; }\n\
+             \x20 return f(n - 1) * f(n - 2);\n\
+             }\n\
+             print(f(10));\n",
+            "function f(n: int): int {\n\
+             \x20 if (n < 2) { return 1; }\n\
+             \x20 let a = f(n - 1);\n\
+             \x20 let b = f(n - 2);\n\
+             \x20 return a * b;\n\
+             }\n\
+             print(f(10));\n",
+        ),
+        (
+            "a_second_parameter",
+            "function f(n: int, m: int): int {\n\
+             \x20 if (n < 2) { return m; }\n\
+             \x20 return f(n - 1, m) + f(n - 2, m);\n\
+             }\n\
+             print(f(15, 3));\n",
+            "function f(n: int, m: int): int {\n\
+             \x20 if (n < 2) { return m; }\n\
+             \x20 let a = f(n - 1, m);\n\
+             \x20 let b = f(n - 2, m);\n\
+             \x20 return a + b;\n\
+             }\n\
+             print(f(15, 3));\n",
+        ),
+    ];
+    for (name, recurrence, spelled_out) in cases {
+        assert_eq!(
+            run_source(&format!("rec_{name}"), recurrence),
+            run_source(&format!("plain_{name}"), spelled_out),
+            "the {name} recurrence must mean the same thing either way"
+        );
+    }
+}
+
+#[test]
+fn a_recursion_can_be_deeper_than_the_stack_once_it_becomes_a_loop() {
+    // fib(90) is 2^90 calls in the source program: it could never finish,
+    // and it would exhaust the stack long before that. The rewrite turns the
+    // recurrence into a loop, so the program computes the answer at once.
+    let source = "function f(n: int): int {\n\
+                  \x20 if (n < 2) { return n; }\n\
+                  \x20 return f(n - 1) + f(n - 2);\n\
+                  }\n\
+                  print(f(90));\n";
+    assert_eq!(run_source("rec_deep", source), "2880067194370816120\n");
+}
+
+#[test]
 fn remainder_matches_javascript() {
     // `%` on doubles truncates toward zero and takes the sign of the
     // dividend — JavaScript's rule, and C's `fmod`, which is what the

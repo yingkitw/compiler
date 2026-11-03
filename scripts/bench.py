@@ -79,7 +79,28 @@ WORKLOADS = [
         ),
         n=35,
         quick_n=30,
-        note="recursive fib — measures call overhead and integer codegen",
+        note=(
+            "recursive fibonacci — a linear recurrence, which this compiler "
+            "rewrites into a loop"
+        ),
+    ),
+    Workload(
+        name="fib_recursive",
+        template=(
+            "function fib(n: number): number {\n"
+            "    if (n < 2) { return n; }\n"
+            "    let a = fib(n - 1);\n"
+            "    let b = fib(n - 2);\n"
+            "    return a + b;\n"
+            "}\n"
+            "{{PRINT}}(fib({{N}}));\n"
+        ),
+        n=35,
+        quick_n=30,
+        note=(
+            "the same fibonacci, written so that no rewrite can fire on it — "
+            "this is the call-overhead comparison"
+        ),
     ),
     Workload(
         name="loop",
@@ -101,10 +122,15 @@ WORKLOADS = [
 # Our own `int` variants of two workloads. The JavaScript toolchains have no
 # integer type, so these cannot be compared against them — they measure how
 # much the `int` type buys us relative to our own `number` versions.
+#
+# The int-fib variant uses the *unrewritten* shape, so that the comparison
+# is about calls and integer arithmetic rather than about two loops.
 INT_FIB = (
     "function fib(n: int): int {\n"
     "    if (n < 2) { return n; }\n"
-    "    return fib(n - 1) + fib(n - 2);\n"
+    "    let a = fib(n - 1);\n"
+    "    let b = fib(n - 2);\n"
+    "    return a + b;\n"
     "}\n"
     "{{PRINT}}(fib({{N}}));\n"
 )
@@ -621,6 +647,7 @@ def write_report(
     load_avg: float | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    overhead_s = overhead_ms / 1000.0
 
     # Per-toolchain startup baseline: the trivial program measures process
     # spawn plus any engine init. Subtracting it isolates the actual compute.
@@ -654,6 +681,12 @@ def write_report(
         "result; the harness fails if they disagree. `compute` is the runtime",
         "with the toolchain's own startup cost subtracted, isolating the",
         "workload from process spawn and engine initialisation.",
+        "",
+        "Two of the workloads are the same recursion. `fib` is written the way",
+        "a programmer writes it, and a compiler that rewrites a linear",
+        "recurrence into a loop turns it into one; `fib_recursive` is written",
+        "so that no rewrite can fire on it, and it is the comparison of what",
+        "the recursion itself costs.",
         "",
         "`Compile (cold)` is the first build of that workload and `Compile",
         "(warm)` the second. Each toolchain keeps one cache for the whole run,",
@@ -705,6 +738,20 @@ def write_report(
             "| Toolchain | Compile (cold) | Compile (warm) | Artifact size | Runtime | compute | vs. compiler |",
             "|---|---|---|---|---|---|---|",
         ]
+        # The compute column is a difference of two wall-clock numbers, and
+        # each of them carries the cost of spawning the process. A difference
+        # smaller than that cost is noise rather than a measurement — which is
+        # exactly what happens to a workload that one compiler rewrites into a
+        # loop. Ratios against it are not reported.
+        below_noise = ours_compute < overhead_s
+        if below_noise:
+            lines += [
+                "",
+                f"Our compute on this workload is below the {overhead_s * 1000:.0f}ms"
+                " process-spawn cost, so the `compute` column and the ratios"
+                " against it are at the measurement's resolution limit."
+                " Compare the runtimes.",
+            ]
         for r in rows:
             if r.error:
                 lines.append(f"| {r.toolchain} | — | — | — | — | — | ERROR |")
@@ -713,6 +760,8 @@ def write_report(
             compute = max(0.0, r.runtime_best - base)
             if r.is_ours:
                 rel = "1.00x (base)"
+            elif below_noise:
+                rel = "—"
             elif ours_compute > 1e-6:
                 rel = f"{compute / ours_compute:.2f}x"
             else:
@@ -735,7 +784,15 @@ def write_report(
         num_compute = num_row.runtime_best - baseline.get(num_row.toolchain, 0.0)
         int_compute = int_row.runtime_best - baseline.get(int_row.toolchain, 0.0)
         speedup = num_compute / int_compute if int_compute > 1e-9 else float("inf")
-        if speedup >= 1.0:
+        if max(num_compute, int_compute) < overhead_s:
+            # Both figures are smaller than the cost of spawning the process,
+            # so their ratio is noise rather than a measurement.
+            verdict = (
+                f"Both variants are below the {overhead_s * 1000:.0f}ms"
+                " process-spawn cost, so this comparison is at the"
+                " measurement's resolution limit."
+            )
+        elif speedup >= 1.0:
             verdict = f"**The `int` type is {speedup:.2f}x faster** on this workload."
         else:
             verdict = f"**The `int` type is {1 / speedup:.2f}x slower** on this workload."
@@ -763,13 +820,16 @@ def write_report(
     )
     lines += int_section(
         "int-fib",
-        "fib",
+        "fib_recursive",
         "int vs number: recursive calls",
         "The same recursive fibonacci, once with `number` and once with `int`.\n"
         "**Here the integer type does not help** — the workload is dominated by\n"
         "call overhead, not arithmetic. That is the evidence that the gap to\n"
         "scriptc on recursive code is about how calls are compiled, not about\n"
-        "floating point.",
+        "floating point.\n"
+        "\n"
+        "Both variants use the shape that no rewrite can fire on, so this\n"
+        "compares two recursive programs rather than two loops.",
     )
 
     lines += ["## Toolchain notes", ""]

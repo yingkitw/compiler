@@ -195,6 +195,57 @@ narrow. It fires only when
 
 Anything else is compiled exactly as written.
 
+### Linear recurrences
+
+A *linear recurrence* — a function defined in terms of its own previous
+values — is exponential in the source program, because the tree of calls has
+2^depth leaves. The values satisfy a recurrence that can be iterated, so the
+compiler rewrites the function into a loop:
+
+```ts
+function fib(n: int): int {
+    if (n < 2) { return n; }        // the base case
+    return fib(n - 1) + fib(n - 2);
+}
+```
+
+becomes, in effect,
+
+```ts
+function fib(n: int): int {
+    if (n < 2) { return n; }        // the base case, unchanged
+    let a = fib(0);                  // the two starting values
+    let b = fib(1);
+    while (n > 1) {
+        let c = b + a;
+        a = b;
+        b = c;
+        n = n - 1;
+    }
+    return b;
+}
+```
+
+— linear time, constant stack, and the same value, bit for bit: the loop
+performs the same additions, in the same order, as the recursion does.
+
+The rewrite fires only when
+
+- the function returns a `number` or an `int`,
+- the base case is the first statement of the body, with the same rules as
+  the tail-call rewrite,
+- the base expression has no side effects. The source program evaluates it
+  once per leaf of the call tree; the rewrite evaluates it exactly twice, for
+  the two starting values,
+- the rest of the body is a single `return` whose expression combines *two*
+  self-calls — one at `n - 1` and one at `n - 2` — with a single `+`, `-` or
+  `*`, and nothing else, and
+- every other argument of those calls is a parameter passed on unchanged.
+
+The offsets are exactly one and two because the loop keeps the two previous
+values. A recurrence with a wider gap (`f(n - 1) + f(n - 3)`) needs more
+accumulators, and is left alone.
+
 ### Type rules
 
 - Arithmetic (`+`, `-`, `*`, `/`) requires both operands to have the *same*

@@ -74,6 +74,9 @@ const pi: number = 3.14159;
 // A self-recursive call in tail position is turned into a loop, so a tail
 // recursion runs in constant stack space.
 function double(n: number): number { return n * 2; }
+// A linear recurrence — a function defined in terms of its own previous
+// values — is rewritten into a loop as well: fib(90) is 2^90 calls as
+// written, and ninety after the rewrite.
 function fib(n: number): number {
     if (n < 2) { return n; }
     return fib(n - 1) + fib(n - 2);
@@ -140,7 +143,7 @@ error: cannot initialize 'x: number' with a value of type boolean
 | `src/lexer.rs` | Tokenizer. Every token carries its source line, so diagnostics point at a line |
 | `src/parser.rs` | Recursive descent, one method per precedence level |
 | `src/ast.rs` | Shared AST types — the contract between parser and codegen |
-| `src/rewrite.rs` | Tail-call elimination: a self-recursive call in tail position becomes a loop |
+| `src/rewrite.rs` | Source-to-source optimisations: a self-recursive call in tail position becomes a loop, and a linear recurrence becomes a loop as well |
 | `src/codegen.rs` | One pass that type-checks **and** emits Cranelift IR: SSA variables, basic blocks for `if`/`while`, and for short-circuit `&&` / `\|\|` |
 
 Four design points worth knowing:
@@ -160,6 +163,11 @@ Four design points worth knowing:
   constant stack space — ten million levels deep, where it used to overflow.
   The rewrite only fires on a shape it can recognise exactly (see
   [SPEC.md](SPEC.md)); anything else is compiled as written.
+- **A linear recurrence is not exponential.** A function defined in terms of
+  its own previous values — `fib(n) = fib(n-1) + fib(n-2)` — is rewritten
+  into a loop with two accumulators, so the same program computes the same
+  answer in linear time and in constant stack space. `fib(90)` is 2^90 calls
+  as written; after the rewrite it is ninety.
 
 Read [ARCHITECTURE.md](ARCHITECTURE.md) for the full design rationale, and
 [SPEC.md](SPEC.md) for the complete grammar and CLI contract.

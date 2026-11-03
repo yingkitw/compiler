@@ -19,7 +19,7 @@ design is the way it is.
                     └───────────┬──────────┘
                                 │  ast::Program
                     ┌───────────▼──────────┐
-                    │      rewrite.rs       │  tail calls → loops
+                    │      rewrite.rs       │  tail calls and recurrences → loops
                     └───────────┬──────────┘
                                 │  ast::Program
                     ┌───────────▼──────────┐
@@ -79,12 +79,13 @@ No cycles, no back-references.
   a `let` needs a type or an initializer, and `main` must have the right shape.
   All type checking happens later.
 
-### `rewrite.rs` — tail-call elimination
-- `eliminate_tail_calls(prog: &mut Program)` rewrites the program in place.
+### `rewrite.rs` — source-to-source optimisations
+- `optimise(prog: &mut Program)` runs every rewrite over the program:
+  `eliminate_tail_calls` and then `eliminate_recurrences`.
 - It runs **between parsing and code generation**, so `codegen.rs` sees only
-  ordinary statements and needs no knowledge of the optimisation.
-- **What it does**: a self-recursive call in tail position becomes a loop.
-  A function whose body is
+  ordinary statements and needs no knowledge of the optimisations.
+- **Tail-call elimination**: a self-recursive call in tail position becomes a
+  loop. A function whose body is
   ```
   if (p0 <= limit) { return base; }
   return f(p0 - k, p1, ...);
@@ -98,12 +99,27 @@ No cycles, no back-references.
   accumulator along the loop instead of on the stack. A void function whose
   tail call is a statement (`f(p0 - k);`) is rewritten the same way, with the
   statements that run on every level moved into the loop.
+- **Linear recurrences**: a function defined in terms of its own previous
+  values (`return f(p0 - 1) + f(p0 - 2);`) is exponential in the source
+  program — the tree of calls has 2^depth leaves. The rewrite turns it into a
+  loop with two accumulators:
+  ```
+  if (p0 < 2) { return base; }        // the base case, unchanged
+  let a = f(0);                        // the two starting values
+  let b = f(1);
+  while (p0 > 1) { let c = b + a; a = b; b = c; p0 = p0 - 1; }
+  return b;
+  ```
+  The loop performs the same additions, in the same order, as the recursion
+  does, so the answer is bit for bit the same — in linear time, and in
+  constant stack space.
 - **Why it matters**: a tail call does not need the frame it was made in, so
   the recursion costs one frame instead of one per level. A recursion of ten
   million levels now runs in constant stack space; before, it died with
-  "maximum recursion depth exceeded".
-- **What it deliberately does not do**: the rewrite only fires on a narrow,
-  recognisable shape (see the module's own documentation). Anything it does
+  "maximum recursion depth exceeded". A recurrence that costs 2^90 calls now
+  costs 90.
+- **What it deliberately does not do**: the rewrites only fire on a narrow,
+  recognisable shape (see the module's own documentation). Anything they do
   not recognise is left exactly as it was — a rewrite that fires on the wrong
   program is a miscompile, and a missed optimisation is always the cheaper
   mistake.
@@ -118,6 +134,10 @@ No cycles, no back-references.
     outermost level inwards, so the term must have no side effects.
   - The statements of a void tail call run in a fresh frame per level, so
     they may not assign, and they may not call the function again.
+- **The recurrence rewrite has one more rule**: the source program evaluates
+  the base expression once per leaf of the call tree, and the rewrite
+  evaluates it exactly twice — for the two starting values — so the base
+  expression must have no side effects either.
 
 ### `codegen.rs` — type checking + machine code
 - `compile(program: &Program) -> Result<Vec<u8>, String>` returns the bytes of a
@@ -149,9 +169,9 @@ Vec<Token>                     every token carries its line number
    │  parser::parse
    ▼
 ast::Program                   Type / Expr / Stmt trees
-   │  rewrite::eliminate_tail_calls
+   │  rewrite::optimise
    ▼
-ast::Program                   self-recursive tail calls turned into loops
+ast::Program                   tail calls and linear recurrences turned into loops
    │  codegen::compile
    ├─ pass 1: collect Stmt::Func → FuncId + signature   (enables recursion
    │                                                        and forward refs)

@@ -75,10 +75,10 @@ fn run(input: &Path, output: Option<PathBuf>, compile_only: bool) -> Result<Path
 
     let toks = lexer::lex(&src)?;
     let mut prog = parser::parse(toks)?;
-    // Tail-call elimination runs between parsing and code generation: it
-    // rewrites a self-recursive call in tail position into a loop, so the
-    // recursion no longer needs a stack frame per level.
-    rewrite::eliminate_tail_calls(&mut prog);
+    // The source-to-source rewrites run between parsing and code generation:
+    // a self-recursive call in tail position becomes a loop, and a linear
+    // recurrence becomes a loop as well.
+    rewrite::optimise(&mut prog);
     let obj = codegen::compile(&prog)?;
 
     let stem = input.with_extension("");
