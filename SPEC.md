@@ -61,8 +61,9 @@ initializer. Annotations are mandatory for parameters.
   nest).
 - **Keywords**: `let`, `const`, `function`, `if`, `else`, `while`, `return`,
   `true`, `false`.
-- **Reserved for future use**: `number`, `int`, `boolean`, `void` are recognised only in
-  type-annotation position.
+- **Type names**: `number`, `int`, `boolean`, `void`. These are ordinary
+  identifiers — `let number = 5;` is legal — and they name a type only when
+  they appear in a type-annotation position.
 
 ### Grammar
 
@@ -98,7 +99,7 @@ andExpr      ::= equality ("&&" equality)* ;
 equality     ::= comparison (("==" | "!=") comparison)* ;
 comparison   ::= term (("<" | "<=" | ">" | ">=") term)* ;
 term         ::= factor (("+" | "-") factor)* ;
-factor       ::= unary (("*" | "/") unary)* ;
+factor       ::= unary (("*" | "/" | "%") unary)* ;
 unary        ::= ("!" | "-") unary | call ;
 call         ::= primary ("(" args? ")")* ;
 primary      ::= NUMBER | "true" | "false" | IDENT | "(" expr ")" ;
@@ -107,7 +108,8 @@ type         ::= "number" | "int" | "boolean" | "void" ;
 ```
 
 **Operator precedence**, loosest to tightest: assignment → `||` → `&&` →
-equality → relational → additive → multiplicative → unary → call → primary.
+equality → relational → additive → multiplicative (`*`, `/`, `%`) → unary →
+call → primary.
 Assignment is right-associative; all binary operators are left-associative.
 
 **Not supported**: `++`, `--`, compound assignment, `? :`, `for`, `do`,
@@ -154,7 +156,7 @@ JavaScript's `%`.
 - `print` is reserved: it cannot be redefined.
 - Numbers print exactly like JavaScript's `Number.prototype.toString`: the
   shortest decimal string that round-trips back to the same `f64`, in fixed
-  notation for decimal exponents in [-6, 21] and exponential notation
+  notation for decimal exponents in [-6, 20] and exponential notation
   otherwise (`42`, `12.56636`, `0.3333333333333333`, `1e+21`, `1e-7`).
   `NaN` prints as `NaN`, division by zero as `Infinity`, and `-0` as `0`.
 - Booleans print as `true` / `false`.
@@ -215,9 +217,10 @@ Anything else is compiled exactly as written.
 ### Linear recurrences
 
 A *linear recurrence* — a function defined in terms of its own previous
-values — is exponential in the source program, because the tree of calls has
-2^depth leaves. The values satisfy a recurrence that can be iterated, so the
-compiler rewrites the function into a loop:
+values — is exponential in the source program: the tree of calls has
+`F(depth)` leaves and `2·F(depth) − 1` calls in total. The values satisfy a
+recurrence that can be iterated, so the compiler rewrites the function into a
+loop:
 
 ```ts
 function fib(n: int): int {

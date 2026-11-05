@@ -75,9 +75,14 @@ let k: int = -5;              // negative int literals work
 // recursion runs in constant stack space.
 function double(n: number): number { return n * 2; }
 // A linear recurrence — a function defined in terms of its own previous
-// values — is rewritten into a loop as well: fib(90) is 2^90 calls as
-// written, and ninety after the rewrite.
-function fib(n: number): number {
+// values — is rewritten into a loop as well, so fib(90) is an astronomical
+// number of calls as written and ninety after the rewrite.
+//
+// The rewrite needs an `int` parameter: the loop counts the values it
+// computes with its own index, and a fractional argument would make the
+// loop's count and the recursion's depth disagree. A `number` fibonacci is
+// left exactly as it was written.
+function fib(n: int): int {
     if (n < 2) { return n; }
     return fib(n - 1) + fib(n - 2);
 }
@@ -91,7 +96,7 @@ while (i < 10) {
 }
 print(sum);                   // 45
 
-// Operators:  + - * /   == != < <= > >=   && || (short-circuit)   !   unary -
+// Operators:  + - * / %   == != < <= > >=   && || (short-circuit)   !   unary -
 // Truthiness: a number is false iff it equals 0.
 
 // Entry points: top-level statements run first, then main() if you define one.
@@ -149,11 +154,12 @@ error: cannot initialize 'x: number' with a value of type boolean
 | `src/rewrite/` | Source-to-source optimisations: a self-recursive call in tail position becomes a loop, and a linear recurrence becomes a loop as well |
 | `src/codegen/` | One pass that type-checks **and** emits Cranelift IR: SSA variables, basic blocks for `if`/`while`, and for short-circuit `&&` / `\|\|` |
 
-Four design points worth knowing:
+Five design points worth knowing:
 
 - **A tiny C runtime instead of variadic `printf`.** The generated code imports
-  `ts_print_number(double)` and `ts_print_bool(signed char)` — fixed-arity
-  functions with an unambiguous ABI, linked alongside the object file.
+  `ts_print_number(double)`, `ts_print_bool(signed char)` and
+  `ts_print_int(long long)` — fixed-arity functions with an unambiguous ABI,
+  linked alongside the object file.
 - **Position-independent code is always on.** Without it, external calls fail to
   link on macOS arm64 with "Illegal text-relocations".
 - **A stack overflow is an error, not a crash.** Unbounded recursion used to
@@ -169,17 +175,22 @@ Four design points worth knowing:
 - **A linear recurrence is not exponential.** A function defined in terms of
   its own previous values — `fib(n) = fib(n-1) + fib(n-2)` — is rewritten
   into a loop with two accumulators, so the same program computes the same
-  answer in linear time and in constant stack space. `fib(90)` is 2^90 calls
-  as written; after the rewrite it is ninety.
+  answer in linear time and in constant stack space. `fib(90)` is an
+  astronomical number of calls as written; after the rewrite it is ninety.
+  The rewrite needs an `int` parameter — the loop counts integers, so a
+  fractional argument would make its count and the recursion's depth
+  disagree — so a `number` fibonacci is left exactly as it was written.
 
 Read [ARCHITECTURE.md](ARCHITECTURE.md) for the full design rationale, and
 [SPEC.md](SPEC.md) for the complete grammar and CLI contract.
 
 ## Not supported yet
 
-Strings, arrays, objects, classes, closures, generics, modules, `for`/`switch`,
-`continue`/`break`, `++`/`--`, and compound assignment. `void` is a return
-type only — a variable or a parameter cannot have it.
+Strings, arrays, objects, classes, closures, generics, modules, `for`/`do`/
+`switch`, `continue`/`break`, `++`/`--`, compound assignment, `? :`,
+`throw`/`try`, string literals, and arrow functions. `void` is a return
+type only — a variable or a parameter cannot have it. The full list is in
+[SPEC.md](SPEC.md).
 
 `number` is an IEEE-754 double, so it is exact only up to 2^53. Use the `int`
 type (64-bit, wrapping) when the value has to be exact; an `int` division by
@@ -198,11 +209,14 @@ fails if they disagree.
 | | compiler | scriptc | compiler v0.1.0 | deno compile | bun --compile | tsrust + node | tsc + node |
 |---|---|---|---|---|---|---|---|
 | **Artifact size** | **33.8 KiB** | 109 KiB | 32.9 KiB | 65.1 MiB | 60.5 MiB | 133 B JS | 119 B JS |
-| **Startup** | **24.4 ms** | 25.9 ms | 22.2 ms | 32.1 ms | 34.3 ms | 149 ms | 157 ms |
-| **Compile time** | **0.19 s** | 0.11 s | 0.19 s | 1.00 s | 0.98 s | 0.45 s | 0.39 s |
-| **fib(35) runtime** | **28.2 ms** | 49.9 ms | 69.7 ms | 130 ms | 89 ms | 246 ms | 248 ms |
-| **fib(35) unrewritten** | 69.9 ms | **48.3 ms** | 70.7 ms | 130 ms | 87 ms | 244 ms | 251 ms |
-| **loop(1e8) runtime** | 129 ms | **125 ms** | 129 ms | 139 ms | 142 ms | 259 ms | 275 ms |
+| **Startup** | **22.9 ms** | 21.8 ms | 21.7 ms | 32.0 ms | 34.1 ms | 153 ms | 150 ms |
+| **Compile time** | **0.21 s** | 0.12 s | 0.17 s | 1.15 s | 1.07 s | 0.39 s | 0.43 s |
+| **fib(35) runtime** | 68.2 ms | **48.3 ms** | 67.4 ms | 130 ms | 81.0 ms | 242 ms | 241 ms |
+| **fib(35) unrewritten** | 69.4 ms | **46.0 ms** | 68.0 ms | 131 ms | 81.2 ms | 240 ms | 239 ms |
+| **loop(1e8) runtime** | **122 ms** | 123 ms | 126 ms | 134 ms | 130 ms | 248 ms | 255 ms |
+
+The **Startup** and **Compile time** rows are from the startup workload; the
+other three are from the workload they name.
 
 Full numbers, methodology, and the raw report: [`bench/RESULTS.md`](bench/RESULTS.md).
 Regenerate with `python3 scripts/bench.py`.
@@ -210,46 +224,44 @@ Regenerate with `python3 scripts/bench.py`.
 The **Startup** row is the one sensitive to the host: spawning a process costs
 ~5 ms on an idle machine and ~20 ms on a busy one, which changes every ratio
 without changing the differences. The committed report was taken with a load
-average of 22.5 and a 21.5 ms spawn floor, so the startup row above is a
+average of 16.8 and a 17.7 ms spawn floor, so the startup row above is a
 busy-host number; on an idle host it reads about a third of that. The report
 records the load average of the run it came from, so you can tell which
 numbers to trust.
-
-The two fibonacci rows are the same recursion. In the first, it is written the
-way a programmer writes it and the compiler rewrites the recurrence into a
-loop, so the whole program finishes in the time it takes to start. In the
-second it is written so that no rewrite can fire on it, which is the
-comparison of what the recursion itself costs.
 
 **Where we win.** `deno compile` and `bun build --compile` embed a JavaScript
 engine (V8 / JavaScriptCore) in the binary. We compile to machine code, so
 there is no engine to ship and nothing to initialise at startup — a 33 KiB
 binary instead of 60 MiB, ~2000x smaller, and ~1.4x faster to start.
 
-**A linear recurrence is not exponential.** The fibonacci workload is the
-same program twice: written the way a programmer writes it, and written so
-that no rewrite can fire on it. In the first form our compiler turns the
-recurrence into a loop, and the whole program — 2^35 calls as written —
-finishes in the time it takes to start the process: **28 ms against
-scriptc's 50 ms**. In the second form, where the recursion survives, the
-gap is the other way round: **70 ms against scriptc's 48 ms**, because
-scriptc rewrites more shapes than we do.
-
 **Where we lose.** The honest comparison is [`scriptc`](https://scriptc.dev)
-(Vercel Labs), the only other engine-free native TypeScript compiler. On the
-recursion that survives the rewrite it beats us (49 ms against our 68 ms).
+(Vercel Labs), the only other engine-free native TypeScript compiler. It beats
+us on the recursive workloads: **48 ms against our 68 ms** on the fibonacci, and
+**46 ms against our 69 ms** on the version written so no rewrite can fire.
 Profiling both binaries shows this is **not** a difference in the cost of a
-call — our calls are the cheaper of the two (1.48 ns per entry against
-scriptc's effective 1.05 ns). It is a difference in **how many calls are
-made**: scriptc rewrites a self-recursive function into a loop around a
-single recursive call, which cuts the number of function entries by 5.24x.
-We now do the same for the *chain* shape (`f(n) = f(n-1)` is a loop on our
-side too) and for a *linear recurrence* (`f(n) = f(n-1) + f(n-2)` is a loop
-with two accumulators), but scriptc recognises more shapes than we do — and
-a shape we do not recognise is left exactly as it was written. Our tight
-loop already ties scriptc, and switching that loop to 64-bit integers makes
-it 1.5x faster while the same change does nothing for recursive calls
-(1.01x) — the arithmetic was never the issue.
+call — it is a difference in **how many calls are made**: scriptc rewrites a
+self-recursive function into a loop around a single recursive call, which cuts
+the number of function entries by 5.24x. We do the same for the *chain* shape
+(`f(n) = f(n-1)` is a loop on our side too) and for a *linear recurrence*
+(`f(n) = f(n-1) + f(n-2)` is a loop with two accumulators) — but scriptc
+recognises more shapes than we do, and a shape we do not recognise is left
+exactly as it was written. Our tight loop already ties scriptc, and switching
+that loop to 64-bit integers makes it **1.52x** faster while the same change
+does not help recursive calls — the arithmetic was never the issue.
+
+**A linear recurrence is not exponential.** This is the rewrite at work, and
+it is the biggest thing the compiler does that a JIT cannot do. The same
+fibonacci, twice, both using `int`; the only difference is the shape:
+
+| | runtime |
+|---|---|
+| rewritten into a loop | **25.3 ms** — about the cost of starting the process |
+| left as a recursion | 69.8 ms |
+
+The rewrite needs an `int` parameter — the loop counts integers, so a
+fractional argument would make its count and the recursion's depth disagree —
+so a `number` fibonacci is left exactly as written. That is why the two
+fibonacci rows above are both exponential.
 
 **Where nobody wins.** On a tight numeric counting loop, V8 and
 JavaScriptCore are excellent at that shape, and Cranelift's optimiser does
@@ -257,15 +269,15 @@ not beat a mature JIT — we are within noise of all of them (~1.0x).
 
 **A note on `tsrust`.** [`tsrust`](https://github.com/ferrotype/tsr) is
 TypeScript 7's Go compiler ported to Rust. It emits the same JavaScript as
-`tsc` and performs identically (106 ms vs 105 ms on fib) — being written in
+`tsc` and performs identically (242 ms vs 241 ms on fib) — being written in
 Rust does not make the *output* faster, only the compiler. It is the sharpest
 illustration of what this project is doing differently: we do not emit
 JavaScript at all.
 
 **The `int` type.** `int` (64-bit) keeps arithmetic exact past 2^53 and is
-measurably faster where arithmetic is the work: **1.57x** on an arithmetic-only
-loop and **1.94x** when a function call happens per iteration. It does not help
-on recursion (1.07x on the unrewritten fibonacci), which is the evidence that
+measurably faster where arithmetic is the work: **1.52x** on an arithmetic-only
+loop. It does not help on recursion — the `int` version of the unrewritten
+fibonacci is **1.01x slower** — which is the evidence that
 the gap to scriptc is not about arithmetic. It is not a cross-toolchain
 comparison — the JavaScript toolchains have no integer type.
 
@@ -297,7 +309,7 @@ generated IR. Beyond that:
 | [SPEC.md](SPEC.md) | CLI contract, grammar, type rules, runtime ABI |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Module relationships, data flow, design decisions |
 | [TODO.md](TODO.md) | Roadmap, completed work, scorecard |
-| [bench/RESULTS.md](bench/RESULTS.md) | Competitive benchmark against deno, bun, and tsc+node |
+| [bench/RESULTS.md](bench/RESULTS.md) | Competitive benchmark against scriptc, deno, bun, tsrust, and tsc+node |
 
 `AGENTS.md` and `MEMORY.md` are agent-local working documents — the development
 loop and the harvested knowledge base. They are gitignored and not shipped with

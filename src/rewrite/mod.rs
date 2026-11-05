@@ -16,7 +16,7 @@
 //!
 //! A *linear recurrence* is a function defined in terms of its own previous
 //! values. The source program computes it exponentially — the tree of calls
-//! has 2^depth leaves — but the values satisfy a recurrence that can be
+//! has `F(depth)` leaves — but the values satisfy a recurrence that can be
 //! iterated, so the rewrite turns it into a loop as well.
 //!
 //! # The rule both rewrites obey

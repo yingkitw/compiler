@@ -12,7 +12,7 @@
 //! ```
 //!
 //! That is fibonacci, and the source program computes it exponentially: the
-//! tree of calls has 2^depth leaves. The values, however, satisfy a
+//! tree of calls has `F(depth)` leaves. The values, however, satisfy a
 //! recurrence that can be *iterated*:
 //!
 //! ```text
@@ -41,7 +41,9 @@
 //! recognised exactly. It fires only when
 //!
 //! * the function returns a `number` or an `int`, and its first parameter is
-//!   a number — the loop compares the two,
+//!   an `int` — the loop counts the values it computes with its own index, and
+//!   a fractional argument would make the loop's count and the recursion's
+//!   depth disagree,
 //! * the base case is the first statement of the body, with the same rules
 //!   as the tail-call rewrite — a statement before it would run once per
 //!   recursion level in the source program and once in the rewritten one,

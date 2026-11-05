@@ -123,7 +123,7 @@ over about 450 lines:
   statements that run on every level moved into the loop.
 - **Linear recurrences**: a function defined in terms of its own previous
   values (`return f(p0 - 1) + f(p0 - 2);`) is exponential in the source
-  program — the tree of calls has 2^depth leaves. The rewrite turns it into a
+  program — the tree of calls has `F(depth)` leaves. The rewrite turns it into a
   loop with one accumulator per value the recurrence needs:
   ```
   if (p0 < 2) { return base; }        // the base case, unchanged
@@ -143,11 +143,17 @@ over about 450 lines:
   constant stack space. The expression's shape is preserved exactly, so a
   recurrence with a third term, a coefficient or a wider gap is rewritten
   the same way.
+- **The recurrence rewrite needs an `int` parameter.** The loop counts the
+  values it computes with its own index, so a fractional argument would make
+  the loop's count and the recursion's depth disagree — `fib(2.5)` descends
+  2.5 → 1.5 → 0.5, while the loop counts integers. The rewrite therefore
+  applies only to an `int` parameter, and a `number` fibonacci is left
+  exactly as it was written.
 - **Why it matters**: a tail call does not need the frame it was made in, so
   the recursion costs one frame instead of one per level. A recursion of ten
   million levels now runs in constant stack space; before, it died with
-  "maximum recursion depth exceeded". A recurrence that costs 2^90 calls now
-  costs 90.
+  "maximum recursion depth exceeded". A recurrence that costs an astronomical
+  number of calls now costs ninety.
 - **What it deliberately does not do**: the rewrites only fire on a narrow,
   recognisable shape (see the module's own documentation). Anything they do
   not recognise is left exactly as it was — a rewrite that fires on the wrong
@@ -166,7 +172,8 @@ over about 450 lines:
     they may not assign, and they may not call the function again.
 - **The recurrence rewrite has one more rule**: the source program evaluates
   the base expression once per leaf of the call tree, and the rewrite
-  evaluates it exactly twice — for the two starting values — so the base
+  evaluates it once per starting value — one per accumulator, so two for a
+  fibonacci and three for a recurrence with a gap of three — so the base
   expression must have no side effects either.
 
 ### `codegen/` — type checking + machine code
@@ -276,12 +283,13 @@ optimisation, and its API changes between releases (see MEMORY.md → *Cranelift
 0.136 API Differences*).
 
 ### A fixed-arity C runtime shim instead of calling `printf`
-**Decision**: the generated code imports `ts_print_number(double)` and
-`ts_print_bool(signed char)`, both defined in a tiny C file linked alongside the
-object.
+**Decision**: the generated code imports `ts_print_number(double)`,
+`ts_print_bool(signed char)`, `ts_print_int(long long)`, `ts_runtime_init(void)`
+and `ts_fmod(double, double)`, all defined in a small C file linked alongside
+the object.
 **Why**: `printf` is variadic, and calling a variadic function from Cranelift
 requires setting the vector-register count for the SysV ABI — fragile and
-platform-specific. Two fixed-arity functions have an unambiguous ABI.
+platform-specific. Fixed-arity functions have an unambiguous ABI.
 **Trade-off**: the runtime must be written in C and linked with `cc`, so a C
 compiler is required. The alternative — emitting the print logic in Cranelift
 itself — would need a string-conversion routine and more runtime code.
@@ -289,7 +297,7 @@ itself — would need a string-conversion routine and more runtime code.
 ### Number printing follows JavaScript, not `printf("%g")`
 **Decision**: `ts_print_number` implements JavaScript's
 `Number.prototype.toString` — the shortest decimal that round-trips back to the
-same `f64`, in fixed notation for decimal exponents in [-6, 21] and exponential
+same `f64`, in fixed notation for decimal exponents in [-6, 20] and exponential
 notation otherwise.
 **Why**: `%g` keeps only six significant digits, so `print(333333283333717100000)`
 printed `3.33333e+20` — a *different number* from the one computed. A
@@ -297,7 +305,8 @@ TypeScript compiler whose output disagrees with TypeScript's own semantics is
 wrong, not merely imprecise. The competitive benchmark caught this: the
 harness requires every toolchain to print identical output, and only the
 JavaScript toolchains matched each other.
-**Trade-off**: the runtime grew from one line to roughly ninety, and
+**Trade-off**: `ts_print_number` grew from one line to about sixty, and the
+whole runtime is about 150 lines of C, and
 `print(3.14159 * 2 * 2)` changed from `12.5664` to `12.56636` — a visible
 behaviour change, but the old value was lossy.
 

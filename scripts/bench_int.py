@@ -12,6 +12,19 @@ Four shapes, each timed in interleaved rounds:
 The point is to attribute the difference: the `int` type changes how a value
 is represented, and a value that must survive a call has to live somewhere
 callee-saved.
+
+The fib case deliberately uses the shape the recurrence rewrite cannot fire
+on:
+
+    let a = fib(n - 1);
+    let b = fib(n - 2);
+    return a + b;
+
+The shape `return fib(n - 1) + fib(n - 2);` *is* rewritten, but only when the
+parameter is an `int` -- so comparing that shape across `number` and `int`
+would measure the rewrite, not the type. The `number` variant would stay
+exponential while the `int` one became a loop. This script measures the type,
+so both variants have to stay exponential.
 """
 
 from __future__ import annotations
@@ -69,7 +82,9 @@ print(sum);
         "fib (number)",
         """function fib(n: number): number {
     if (n < 2) { return n; }
-    return fib(n - 1) + fib(n - 2);
+    let a = fib(n - 1);
+    let b = fib(n - 2);
+    return a + b;
 }
 print(fib(35));
 """,
@@ -79,7 +94,9 @@ print(fib(35));
         "fib (int)",
         """function fib(n: int): int {
     if (n < 2) { return n; }
-    return fib(n - 1) + fib(n - 2);
+    let a = fib(n - 1);
+    let b = fib(n - 2);
+    return a + b;
 }
 print(fib(35));
 """,

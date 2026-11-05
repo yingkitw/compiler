@@ -8,8 +8,26 @@ script answers the second one, for several shapes of the same program:
 
   chain       f(n) = f(n-1)                 one call per level, no arithmetic
   binary      f(n) = f(n-1) + f(n-2)        the fib shape
-  binary_int  the same with `int`           no float arithmetic, no spills
+  binary_int  the same recursion with `int` no float arithmetic, no spills
   hoisted     the arguments computed first   scriptc's shape, by hand
+
+`binary_int` is ours-only (scriptc has no `int`), and it is *not* comparable
+with `binary`: to stay a recursion it has to use the shape the recurrence
+rewrite cannot fire on, while `binary` uses the shape a programmer writes.
+Their per-entry costs are therefore measured on slightly different code. The
+like-for-like int-vs-number comparison lives in `scripts/bench_int.py`.
+
+All three recursion shapes stay *unrewritten*. `chain` is rewritten by the
+tail-call pass on our side and by scriptc, so its per-entry cost is reported
+as "optimised away". `binary` and `binary_int` use the shape the recurrence
+rewrite cannot fire on -- the one with the two `let` bindings would also
+work, but the direct sum is the shape a programmer writes. Crucially,
+`binary_int` must NOT use the shape the rewrite fires on: the rewrite needs
+an `int` parameter, so an int fib in that shape becomes a loop while the
+number one stays exponential, and the comparison would measure the rewrite
+rather than the type. See `scripts/bench_int.py` for the same fix, and
+`scripts/bench.py`'s `int-fib-rewritten` workload for the rewrite measured
+directly.
 
 Three disciplines, all learned the hard way (see MEMORY.md):
 
@@ -54,7 +72,9 @@ print(f({N}));
 """,
     "binary_int": """function f(n: int): int {
     if (n < 2) { return n; }
-    return f(n - 1) + f(n - 2);
+    let a = f(n - 1);
+    let b = f(n - 2);
+    return a + b;
 }
 print(f({N}));
 """,

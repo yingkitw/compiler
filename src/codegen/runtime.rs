@@ -15,7 +15,7 @@ pub const RUNTIME_C: &str = r#"
 
 /* Print a double the way JavaScript's Number::toString does: the shortest
  * decimal string that round-trips back to the same f64, in fixed notation for
- * decimal exponents in [-6, 21] and exponential notation otherwise.
+ * decimal exponents in [-6, 20] and exponential notation otherwise.
  * Printing "%g" instead would silently drop precision beyond six
  * significant digits. */
 void ts_print_number(double x) {

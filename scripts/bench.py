@@ -38,8 +38,10 @@ TSC_BIN = ROOT / "target" / "release" / "tsc"
 # The published v0.1.0 of this compiler installs a binary named `tsc` (see the
 # [[bin]] section in Cargo.toml), which is ambiguous with TypeScript's own
 # `tsc`. Install it into a dedicated prefix so the benchmark can call it
-# unambiguously:
-#   cargo install tsc-rs --version 0.1.0 --root bench/.toolchains/tsc-rs
+# unambiguously. Note the crate name is `compiler` — the first publish went
+# out as `tsc-rs` and was yanked, so `cargo install tsc-rs` no longer
+# resolves:
+#   cargo install compiler --version 0.1.0 --root bench/.toolchains/tsc-rs
 PUBLISHED_BIN = ROOT / "bench" / ".toolchains" / "tsc-rs" / "bin" / "tsc"
 
 # TypeScript's own compiler, resolved at startup because our binary shadows it.
@@ -80,8 +82,10 @@ WORKLOADS = [
         n=35,
         quick_n=30,
         note=(
-            "recursive fibonacci — a linear recurrence, which this compiler "
-            "rewrites into a loop"
+            "recursive fibonacci — the shape a recurrence rewrite fires on, "
+            "but with a `number` parameter, which our rewrite requires to be "
+            "an `int` (the loop counts integers), so it stays exponential "
+            "here"
         ),
     ),
     Workload(
@@ -131,6 +135,20 @@ INT_FIB = (
     "    let a = fib(n - 1);\n"
     "    let b = fib(n - 2);\n"
     "    return a + b;\n"
+    "}\n"
+    "{{PRINT}}(fib({{N}}));\n"
+)
+
+# The same fibonacci in the shape the *recurrence rewrite* fires on. The
+# rewrite needs an `int` parameter — the loop counts integers, so a
+# fractional argument would make its count and the recursion's depth
+# disagree — so this is the only shape in which the rewrite is measured.
+# The `int` type and the rewrite are therefore entangled: there is no way
+# to rewrite a `number` fibonacci.
+INT_FIB_REWRITTEN = (
+    "function fib(n: int): int {\n"
+    "    if (n < 2) { return n; }\n"
+    "    return fib(n - 1) + fib(n - 2);\n"
     "}\n"
     "{{PRINT}}(fib({{N}}));\n"
 )
@@ -548,9 +566,11 @@ def main() -> int:
 
         # The `int` variants — tsc-rs only, since the JavaScript toolchains
         # have no integer type.
-        print("\n=== workloads: int-fib, int-loop (tsc-rs only) — the integer type")
+        print("\n=== workloads: int-fib, int-fib-rewritten, int-loop (tsc-rs only) — the integer type")
         int_workloads = [
             ("int-fib", INT_FIB, 35, 30, "recursive fib using the int type"),
+            ("int-fib-rewritten", INT_FIB_REWRITTEN, 35, 30,
+             "the same fib in the shape the recurrence rewrite fires on"),
             ("int-loop", INT_LOOP, 100_000_000, 10_000_000, "tight loop using the int type"),
         ]
         ours_tc = next(t for t in tcs if t.is_ours)
@@ -683,10 +703,11 @@ def write_report(
         "workload from process spawn and engine initialisation.",
         "",
         "Two of the workloads are the same recursion. `fib` is written the way",
-        "a programmer writes it, and a compiler that rewrites a linear",
-        "recurrence into a loop turns it into one; `fib_recursive` is written",
-        "so that no rewrite can fire on it, and it is the comparison of what",
-        "the recursion itself costs.",
+        "a programmer writes it; `fib_recursive` is written so that no rewrite",
+        "can fire on it, and it is the comparison of what the recursion itself",
+        "costs. Our recurrence rewrite needs an `int` parameter, and both of",
+        "these use `number`, so neither is rewritten here — the `int-fib-rewritten`",
+        "workload below is the one that measures the rewrite.",
         "",
         "`Compile (cold)` is the first build of that workload and `Compile",
         "(warm)` the second. Each toolchain keeps one cache for the whole run,",
@@ -815,22 +836,75 @@ def write_report(
         "loop",
         "int vs number: a tight loop",
         "The same counting loop, once with `number` (f64) and once with `int`\n"
-        "(i64). This is where the integer type pays: the workload is dominated\n"
-        "by arithmetic, so integer instructions win.",
+        "(i64). The workload is dominated by arithmetic, so this is where the\n"
+        "integer type shows up: integer instructions win.",
     )
     lines += int_section(
         "int-fib",
         "fib_recursive",
         "int vs number: recursive calls",
         "The same recursive fibonacci, once with `number` and once with `int`.\n"
-        "**Here the integer type does not help** — the workload is dominated by\n"
-        "call overhead, not arithmetic. That is the evidence that the gap to\n"
-        "scriptc on recursive code is about how calls are compiled, not about\n"
+        "This workload is dominated by call overhead rather than by\n"
+        "arithmetic, so it is the comparison that says whether the gap to\n"
+        "scriptc on recursive code is about how calls are compiled or about\n"
         "floating point.\n"
         "\n"
         "Both variants use the shape that no rewrite can fire on, so this\n"
-        "compares two recursive programs rather than two loops.",
+        "compares two recursive programs rather than two loops.\n"
+        "\n"
+        "This figure is one run on a shared host, and the difference between\n"
+        "the two variants is small enough to be inside the noise. The\n"
+        "dedicated measurement is `scripts/bench_int.py`, which interleaves\n"
+        "the variants and takes the minimum of many rounds.",
     )
+
+    # What the recurrence rewrite buys. The rewrite needs an `int` parameter,
+    # so this compares the `int` fib in the rewritten shape against the same
+    # program in the shape the rewrite cannot fire on — the difference is the
+    # rewrite, not the type.
+    rewrite_row = next((r for r in results if r.workload == "int-fib-rewritten"), None)
+    unrewritten_row = next((r for r in results if r.workload == "int-fib"), None)
+    if rewrite_row and unrewritten_row and not rewrite_row.error and not unrewritten_row.error:
+        rw_compute = rewrite_row.runtime_best - baseline.get(rewrite_row.toolchain, 0.0)
+        ur_compute = unrewritten_row.runtime_best - baseline.get(unrewritten_row.toolchain, 0.0)
+        # A negative compute means the program's runtime came in under the
+        # spawn baseline — the workload is cheaper than starting the process.
+        # Clamp it: a negative number of milliseconds of work is not a thing.
+        rw_compute = max(rw_compute, 0.0)
+        if rw_compute < overhead_s:
+            verdict = (
+                f"The rewritten program is below the {overhead_s * 1000:.0f}ms"
+                " process-spawn cost, so the comparison is at the measurement's"
+                " resolution limit. What it shows is that the rewrite removes"
+                " the recursion entirely: the whole program now costs about as"
+                " much as starting the process."
+            )
+        else:
+            verdict = (
+                f"**The recurrence rewrite is {ur_compute / rw_compute:.1f}x"
+                " faster** on this workload."
+            )
+        lines += [
+            "## What the recurrence rewrite buys",
+            "",
+            "The same fibonacci, twice, both using the `int` type. The only"
+            " difference is the shape: the first is written so the recurrence"
+            " rewrite fires on it, the second so that it cannot.",
+            "",
+            "| Variant | Artifact size | Runtime | compute |",
+            "|---|---|---|---|",
+            f"| rewritten into a loop | {human_size(rewrite_row.size)} | {rewrite_row.runtime_best * 1000:.2f}ms | {rw_compute * 1000:.2f}ms |",
+            f"| left as a recursion | {human_size(unrewritten_row.size)} | {unrewritten_row.runtime_best * 1000:.2f}ms | {ur_compute * 1000:.2f}ms |",
+            "",
+            verdict,
+            "",
+            "The rewrite needs an `int` parameter — the loop counts integers,"
+            " so a fractional argument would make its count and the"
+            " recursion's depth disagree. A `number` fibonacci is therefore"
+            " left exactly as written, which is why the `fib` workload above"
+            " stays exponential.",
+            "",
+        ]
 
     lines += ["## Toolchain notes", ""]
     seen = set()

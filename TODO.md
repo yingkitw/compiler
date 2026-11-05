@@ -40,22 +40,29 @@
       integer value so `9007199254740993` (2^53 + 1) survives — a double would
       round it. No implicit conversion between `int` and `number`.
 - [x] **Measured what the `int` type is worth** (`scripts/bench_int.py`,
-      interleaved rounds, min-of-N): **1.43x** on arithmetic-only code, **1.94x**
-      on a function call per iteration, and **0.98x** — a wash — on recursion.
+      interleaved rounds, min-of-N): **1.20x** on arithmetic-only code, **2.44x**
+      on a function call per iteration, and **0.83x** — a small loss — on
+      recursion.
       The recursion result is the interesting one: it says the scriptc gap is
-      not about arithmetic
+      not about arithmetic.
+      The fib case deliberately uses the shape the recurrence rewrite cannot
+      fire on. Comparing the shape it *can* fire on would measure the rewrite,
+      not the type: the `int` version becomes a loop and the `number` version
+      stays exponential. That was a real bug in this script — see MEMORY.md →
+      *A Benchmark Can Compare Two Different Programs*
 - [x] **`return` adapts a literal to the function's return type** — `return 0;`
       in an `int` function used to be rejected, because the return statement did
       not pass the expected type to the expression. Found while writing a
       benchmark program, fixed, and covered by a regression test
 - [x] **Linear recurrences become loops** — a function defined in terms of its
       own previous values (`fib(n) = fib(n-1) + fib(n-2)`) is exponential in
-      the source program: the tree of calls has 2^depth leaves. The rewrite
+      the source program: the tree of calls has `F(depth)` leaves. The rewrite
       turns it into a loop with one accumulator per value the recurrence
       needs, so the same program computes the same answer — bit for bit, the
       loop performs the same operations in the same order on the same values —
-      in linear time and in constant stack space. `fib(90)` is 2^90 calls as
-      written and ninety after the rewrite. This is the classical transform
+      in linear time and in constant stack space. `fib(90)` is an astronomical
+      number of calls as written and ninety after the rewrite. This is the
+      classical transform
       (Kapur, Kogge & Palem, 1986); the recipe and the scoping are in the
       brainstorm below. It fires only on a shape it can recognise exactly: the
       calls must be at constant offsets, everything else in the expression
@@ -63,6 +70,13 @@
       order), and the base expression must have no side effects (the source
       program evaluates it once per leaf, the rewrite once per starting
       value)
+- [x] **The recurrence rewrite requires an `int` parameter** — the loop counts
+      the values it computes with its own index, so a fractional argument made
+      the loop's count and the recursion's depth disagree: `fib(2.5)` printed
+      1 where the program computes 2. The rewrite now fires only on an `int`
+      parameter, so a `number` fibonacci is left exactly as it was written. The
+      `int` type and the rewrite are therefore entangled: there is no way to
+      rewrite a `number` recurrence
 - [x] **The recurrence rewrite covers the wider shapes** — the first version
       handled exactly two calls at offsets one and two. It now handles any
       number of terms, any constant offsets (`f(n-1) + f(n-3)`), a third
@@ -130,7 +144,7 @@
       lines. The split was a *move*, verified by the test suite — the object
       files it produces are byte-for-byte identical to the ones the single
       files produced
-- [x] **117 inline unit tests + 38 integration tests** — all passing; `cargo clippy
+- [x] **117 inline unit tests + 41 integration tests** — all passing; `cargo clippy
       --all-targets` exits 0; doc-sync enforced by `tests/docs_sync.rs`
 - [x] **Inline unit tests for the lexer, parser, and type rules** — 12 lexer tests
       (token kinds, comments, line tracking, exact integer literals, lex errors),
@@ -152,11 +166,12 @@
       asserts the compiler never panics, plus a test that rejected programs
       always produce a diagnostic and never a successful compile
 - [x] **Competitive benchmark** — `scripts/bench.py` compares the same programs
-      compiled by tsc-rs, `deno compile`, `bun build --compile`, and `tsc + node`;
+      compiled by our compiler, `scriptc`, `deno compile`, `bun build
+      --compile`, `tsrust + node`, `tsc + node`, and our own published build;
       output agreement is a gate, and `bench/RESULTS.md` is committed with each
-      change. Result: ~2000x smaller artifacts, 2-3x faster startup, fastest
-      compile time, ~2.2x faster compute than deno on call-heavy code, and
-      roughly tied with a JIT on tight numeric loops (reported honestly)
+      change. Result: ~2000x smaller artifacts, ~1.4x faster startup, fastest
+      compile time, roughly tied with a JIT on tight numeric loops, and scriptc
+      ahead on recursive code (reported honestly)
 - [x] **JS-compatible number printing** — the runtime emits the shortest
       decimal that round-trips, exactly like `Number.prototype.toString`,
       instead of `%g`'s lossy six significant digits. Found by the benchmark;
@@ -179,10 +194,30 @@
       and the new gates. Dry run green, `cargo package --list` reviewed, the
       poisoned build fingerprint cleaned and the release binary verified
       (its symbols present) before the upload
+- [x] **Bumped to v0.3.1** — the documentation audit and the benchmark-script
+      fixes. Not published yet; the published version is still v0.3.0
 
 ## Next
 
 ### High priority
+- [ ] **Rewrite a `number` recurrence, not just an `int` one.** The recurrence
+      rewrite requires an `int` parameter, so a `number` fibonacci is left
+      exactly as written — and scriptc rewrites it anyway, so it beats us on
+      the cross-toolchain `fib` workload (48 ms against our 68 ms). This is
+      the one competitive gap the benchmark still shows.
+      The `int` requirement exists because the loop counts the values it
+      computes with its own index, and a fractional argument makes the loop's
+      count and the recursion's depth disagree (`fib(2.5)` descends 2.5 → 1.5
+      → 0.5 while the loop counts integers). Lifting it means the loop has to
+      derive its own bound from the argument rather than assume integers —
+      probably by counting the number of steps the recursion would take, which
+      is what "hop backwards over the offsets" (below) would also need.
+      Success criterion: `function fib(n: number): number` with the
+      `return fib(n - 1) + fib(n - 2);` shape compiles to a loop, the answer
+      is bit-for-bit what the recursion computes, and the benchmark's `fib`
+      workload is no longer slower than scriptc's.
+      Evidence: MEMORY.md → *The Chain Shape Is Where the Rewrite Shows
+      Itself*; `bench/RESULTS.md`.
 - [ ] **Hop backwards over the offsets.** The rewrite now keeps one value per
       offset the recurrence uses, so `f(n - 1) + f(n - 17)` keeps seventeen
       values and computes every one of them. The literature's refinement
@@ -256,9 +291,12 @@ to the roadmap:
      optimiser, not a fib special case. **We now do both halves of it**
      (`src/rewrite/`): the chain shape is a loop on our side too, and a
      linear recurrence is a loop with two accumulators — so `fib(90)`, which
-     is 2^90 calls as written, costs ninety. The half that is left is
-     scriptc's *wider* set of shapes — scoped as a High-priority item
-     above.
+     is an astronomical number of calls as written, costs ninety.
+     **With one caveat**: scriptc's rewrite works on `number`, ours needs an
+     `int` parameter — so on the cross-toolchain fibonacci, which has to be
+     `number` for the JavaScript toolchains to run it at all, scriptc still
+     wins (48 ms against our 68 ms). That is scoped as a High-priority item
+     above, along with scriptc's *wider* set of shapes.
 - **AssemblyScript** — compiles a TS-like language to WebAssembly with an
   explicit, GC-free memory model (`--runtime stub` gives 1-3 KiB runtimes).
   Worth studying their managed-object layout before designing tsc's runtime,
@@ -339,6 +377,60 @@ Recorded per AGENTS.md Step 7. Total is /30.
 | 2026-11-03 (post-tail-call) | 5 | 4 | 5 | 5 | 5 | 5 | 29 |
 | 2026-11-03 (post-recurrence) | 5 | 4 | 5 | 5 | 5 | 5 | 29 |
 | 2026-11-03 (post-audit) | 5 | 5 | 5 | 5 | 5 | 5 | 30 |
+| 2026-11-05 (post-doc-audit) | 5 | 5 | 5 | 5 | 5 | 5 | 30 |
+
+**Evidence (2026-11-05, post-doc-audit)**: an audit of every markdown file
+against the code. It found one real bug and a dozen drifts.
+
+**Docs stays 5, but the previous 5 was not earned.** The 2026-11-03 scorecard
+recorded Docs 5/5 on the strength of a doc-sync test that checks the docs
+*exist* and that the counts match. It checked nothing about whether the
+numbers in the prose were true, and the README was quoting a benchmark table
+from a run that predated a commit which changed the generated code. The
+audit found that, fixed it, and added three gates that now check the
+figures against the generated report. The score is unchanged; what changed
+is what the score means.
+
+- **The bug**: `scripts/bench_int.py` compared a `number` fibonacci against an
+  `int` one *in the shape the recurrence rewrite fires on*. The rewrite needs
+  an `int` parameter, so the `int` variant had become a loop and the
+  `number` one had not — the script was measuring "rewrite vs no rewrite"
+  and reporting it as "int vs number". It read 2.90x. The script now uses
+  the shape the rewrite cannot fire on, and reads 0.83x. The same bug was in
+  `scripts/bench.py`'s headline `fib` workload, which is why the committed
+  `bench/RESULTS.md` showed a 28 ms fibonacci that the current compiler
+  takes 73 ms to run. Both scripts are fixed and the report regenerated.
+- **The benchmark gained a workload**: `int-fib-rewritten` measures what the
+  rewrite actually buys — 24 ms against 77 ms for the same program written
+  so the rewrite cannot fire. The report has a section for it.
+- **The drifts**: the README's benchmark table and prose quoted the old run;
+  the README's language example claimed a `number` fibonacci was rewritten
+  (it is not, since the audit commit); the README said "Four design points"
+  over five bullets and omitted `%` from the operator list; SPEC.md's
+  grammar had no `%` in it and described the type names as reserved words
+  when `let number = 5;` compiles; ARCHITECTURE.md and TODO.md said the
+  call tree has `2^depth` leaves when it has `F(depth)` — a formula
+  MEMORY.md already had right and explicitly called out as a trap;
+  MEMORY.md still quoted the pre-fix `%g` runtime, and three files put the
+  fixed-notation range at `[-6, 21]` when it is `[-6, 20]`. All corrected.
+- **The gates added**: the README's quoted benchmark factors, its table
+  cells, and the load average and spawn floor it names are now all checked
+  against `bench/RESULTS.md` by `tests/docs_sync.rs`. Each one was verified
+  to fail on injected drift.
+- **The sweep found a third instance of the same bug**: `bench_shape.py`'s
+  `binary_int` shape used the shape the recurrence rewrite fires on, so it
+  reported "the shape was optimised away" for what was supposed to be the
+  per-entry cost of `int` recursion. It now uses the unrewritten shape and
+  reads 1.46 ns/entry. AGENTS.md Step 3a now says to grep the benchmark
+  scripts for the shape a rewrite changes.
+- **The lesson**: the scorecard measures the *code*, not the *claims about
+  the code*. A 30/30 score was recorded on 2026-11-03 while the README
+  quoted numbers from a run that predated the audit commit. The doc-sync
+  test checks that the docs *exist* and that the counts match; nothing
+  checked that the numbers were true. AGENTS.md Step 3a already says to
+  re-benchmark any change that affects generated code — the audit commit
+  changed it and did not. The benchmark is now regenerated as part of this
+  change, and the README quotes it rather than a remembered version.
 
 **Evidence (2026-11-03, post-audit)**: an independent review of the whole
 codebase along the AGENTS.md Step 6 checklist. It found five real bugs, all
@@ -353,7 +445,7 @@ there is no cross-platform pass, and the recurrence rewrite only applies to
 integer parameters.
 
 **Evidence (2026-11-03, post-recurrence)**:
-- *Correctness 5/5*: `cargo test` green — 117 inline unit tests + 38 integration
+- *Correctness 5/5*: `cargo test` green — 117 inline unit tests + 41 integration
   tests. Every language feature has a runnable example, and every number the
   runtime prints is verified byte-identical to JavaScript's `Number::toString`.
   The benchmark found and fixed a real precision bug (`%g` truncating to six
@@ -368,22 +460,23 @@ integer parameters.
 - *Codegen 4/5*: binaries produce reference outputs; PIC verified on macOS
   arm64. Benchmarked against deno, bun, scriptc, tsrust, tsc and our own
   published build: **~2000x smaller artifacts than the engine-bundling
-  toolchains, ~1.4x faster startup, fastest compile time**, and faster than
-  scriptc on tight loops. Unbounded recursion is reported cleanly instead of
-  crashing, a tail recursion costs no stack, and a linear recurrence is
-  compiled to a loop — so the fibonacci workload, which scriptc only
-  partially optimises, is now **faster on our side than on scriptc's**. The
-  one remaining reason this is not 5: there is still no cross-platform or
-  UB/valgrind pass.
+  toolchains, ~1.3x faster startup, fastest compile time**. Unbounded
+  recursion is reported cleanly instead of crashing, a tail recursion costs
+  no stack, and a linear recurrence is compiled to a loop. The one remaining
+  reason this is not 5: there is still no cross-platform or UB/valgrind pass.
+  *(This block predates the documentation audit; the benchmark numbers it
+  quotes were measured before the recurrence rewrite stopped applying to
+  `number` parameters, and the fibonacci claim no longer held. See the
+  current evidence below.)*
 - *Maintainability 5/5*: the three biggest modules are directories, and no file
   is over about 450 lines: `parser/` (the statement forms and the precedence
   levels), `rewrite/` (the two rewrites and the predicates they share), and
   `codegen/` (the type lattice, the C shim, and the two halves of the code
   generator). The split followed the seams the modules already had, so no
-  abstraction was invented — and it was a *move*, so the 113 unit tests and the
-  24 end-to-end tests are what prove it changed nothing. The optimisations
+  abstraction was invented — and it was a *move*, so the unit tests and the
+  end-to-end tests are what prove it changed nothing. The optimisations
   live in their own module rather than inside the code generator, which is
-  what the Mature Module Policy asks for; `rewrite/` has 32 unit tests of its
+  what the Mature Module Policy asks for; `rewrite/` has 35 unit tests of its
   own, one per shape it accepts and one per shape it must refuse. Clippy
   clean. `scripts/bench_calls.py` was rewritten because it measured the wrong
   thing — it is now self-checking (`--self-test`).
@@ -400,11 +493,22 @@ integer parameters.
   exercises the real CLI end to end.
 - *Footprint 5/5*: five dependencies, all essential (Cranelift × 4 +
   target-lexicon); no speculative crates; the CLI avoids `clap` in favour of
-  hand-rolled parsing; the shipped runtime is ~120 lines of C. The rewrites
+  hand-rolled parsing; the shipped runtime is ~150 lines of C. The rewrites
   added no dependency and no runtime code.
 
-**Next weakest area**: Codegen (4/5) — one item now: **a UB/valgrind pass**,
-which is the only remaining gap under *Correctness* and *Codegen*. The
-recursion gap to scriptc is closed: both compilers compile the chain shape to
-a loop, and on the binary shape we now compile the recurrence to a loop
-while scriptc only rewrites part of it.
+**Next weakest area**: Codegen (5/5), Docs (5/5) — but the *documentation
+audit* below found two things the scorecard had not: a benchmark script that
+compared two different programs, and a set of docs that had drifted away from
+the code after the audit commit. Both are fixed. The recurring lesson is that
+the scorecard measures the *code*, not the *claims about the code*: a 30/30
+score said nothing about whether the README's numbers were true.
+
+**The one real competitive gap**: scriptc rewrites a `number` fibonacci into a
+loop; we do not, because our recurrence rewrite requires an `int` parameter.
+So on the cross-toolchain `fib` workload — the one the JavaScript toolchains
+can also run, since they have no integer type — scriptc wins (48 ms against
+our 68 ms). On the shape our rewrite *can* fire on, we win by a wide margin
+(the `int` fibonacci: 25 ms rewritten against 70 ms not). Widening the
+rewrite to `number` parameters needs the loop to count without assuming
+integer steps — that is the honest version of the "hop backwards over the
+offsets" item below.

@@ -481,9 +481,10 @@ fn a_recurrence_with_a_number_parameter_is_left_alone() {
 
 #[test]
 fn a_recursion_can_be_deeper_than_the_stack_once_it_becomes_a_loop() {
-    // fib(90) is 2^90 calls in the source program: it could never finish,
-    // and it would exhaust the stack long before that. The rewrite turns the
-    // recurrence into a loop, so the program computes the answer at once.
+    // fib(90) is an astronomical number of calls in the source program: it
+    // could never finish, and it would exhaust the stack long before that.
+    // The rewrite turns the recurrence into a loop, so the program computes
+    // the answer at once.
     let source = "function f(n: int): int {\n\
                   \x20 if (n < 2) { return n; }\n\
                   \x20 return f(n - 1) + f(n - 2);\n\

@@ -1,10 +1,10 @@
 // A linear recurrence — a function defined in terms of its own previous
-// values — is exponential in the source program: the tree of calls has 2^n
+// values — is exponential in the source program: the tree of calls has F(n)
 // leaves. The compiler rewrites it into a loop, so the same program computes
 // the same answer in linear time, in constant stack space.
 
-// The classic: fibonacci. As written, fib(90) would make 2^90 calls; the
-// rewrite makes ninety of them.
+// The classic: fibonacci. As written, fib(90) would make an astronomical
+// number of calls; the rewrite makes ninety of them.
 //
 // The rewrite needs the parameter to be an `int`: the loop counts the values
 // it computes with its own index, and a fractional argument would make the
