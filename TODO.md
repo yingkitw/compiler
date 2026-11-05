@@ -194,8 +194,16 @@
       and the new gates. Dry run green, `cargo package --list` reviewed, the
       poisoned build fingerprint cleaned and the release binary verified
       (its symbols present) before the upload
-- [x] **Bumped to v0.3.1** — the documentation audit and the benchmark-script
-      fixes. Not published yet; the published version is still v0.3.0
+- [x] **Published as `compiler` v0.3.1** — the documentation audit and the
+      benchmark-script fixes: three scripts had been silently measuring the
+      recurrence rewrite instead of what they claimed, `bench/RESULTS.md` was
+      regenerated, the README now quotes the generated report and is checked
+      against it by three new doc-sync gates, and the honest competitive
+      picture (scriptc ahead on recursive code) is recorded in README, TODO
+      and MEMORY. Dry run green, `cargo package --list` reviewed, the build
+      fingerprint cleaned and the release binary verified before the upload;
+      the published artifact installed and run (its `fib(90)` matches
+      `examples/recurrence.ts`)
 
 ## Next
 
