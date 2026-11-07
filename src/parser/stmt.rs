@@ -6,6 +6,23 @@ use crate::lexer::Tok;
 
 use super::Parser;
 
+/// The statement `++x` and `x++` desugar to: `x = x + 1` (or `x = x - 1`).
+///
+/// The desugar is in the parser, so the AST, the code generator and the
+/// type rules need no new case at all — the assignment's own rules apply
+/// unchanged: the target must be a variable, it must not be a `const`, and
+/// the arithmetic must type-check.
+fn step_op(name: String, op: BinOp) -> Expr {
+    Expr::Assign {
+        name: name.clone(),
+        value: Box::new(Expr::Bin {
+            op,
+            lhs: Box::new(Expr::Var(name)),
+            rhs: Box::new(Expr::Num(NumLit::new(1.0, Some(1)))),
+        }),
+    }
+}
+
 impl Parser {
     pub(super) fn stmt(&mut self) -> Result<Stmt, String> {
         // Each statement starts a new expression, and so a new tree.
@@ -17,6 +34,7 @@ impl Parser {
             Tok::While => self.while_stmt(),
             Tok::For => self.for_stmt(),
             Tok::Return => self.return_stmt(),
+            Tok::PlusPlus | Tok::MinusMinus => self.step_stmt(),
             Tok::LBrace => {
                 self.enter()?;
                 let block = self.block();
@@ -25,10 +43,47 @@ impl Parser {
             }
             _ => {
                 let e = self.expr()?;
+                // The postfix form of `++` and `--`.
+                let step = match self.peek() {
+                    Tok::PlusPlus => Some(BinOp::Add),
+                    Tok::MinusMinus => Some(BinOp::Sub),
+                    _ => None,
+                };
+                if let Some(op) = step {
+                    self.bump();
+                    let e = match e {
+                        Expr::Var(name) => step_op(name, op),
+                        _ => {
+                            return Err(format!(
+                                "line {}: invalid assignment target",
+                                self.line()
+                            ))
+                        }
+                    };
+                    self.expect(&Tok::Semi, "';'")?;
+                    return Ok(Stmt::Expr(e));
+                }
                 self.expect(&Tok::Semi, "';'")?;
                 Ok(Stmt::Expr(e))
             }
         }
+    }
+
+    /// `++x` — the prefix form of the increment and decrement operators.
+    ///
+    /// Both forms are statements rather than expressions: TypeScript's
+    /// postfix `x++` yields the *old* value of `x`, which this subset does
+    /// not model, so they are parsed only where a statement is expected.
+    /// Their meaning is the assignment they desugar to — `x = x + 1`.
+    fn step_stmt(&mut self) -> Result<Stmt, String> {
+        let op = match self.peek() {
+            Tok::PlusPlus => BinOp::Add,
+            _ => BinOp::Sub,
+        };
+        self.bump(); // '++' or '--'
+        let name = self.expect_ident("a variable")?;
+        self.expect(&Tok::Semi, "';'")?;
+        Ok(Stmt::Expr(step_op(name, op)))
     }
 
     pub(super) fn block(&mut self) -> Result<Vec<Stmt>, String> {

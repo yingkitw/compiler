@@ -105,6 +105,12 @@ over about 450 lines:
   holding the init and a `while` whose body is the loop body followed by the
   step, so there is no `Stmt::For` anywhere. The AST, the rewrites and the
   code generator gained nothing and changed not at all.
+- The assignment sugars are desugars too: `x += e` is parsed as `x = x + e`,
+  and `x++` (in either form) as `x = x + 1`. They cost the AST, the code
+  generator and the type rules nothing — the assignment's own rules apply
+  unchanged. The increment operators are parsed only where a statement is
+  expected, because TypeScript's postfix form yields the *old* value,
+  which the subset does not model.
 
 ### `rewrite/` — source-to-source optimisations
 - `optimise(prog: &mut Program)` runs every rewrite over the program:
@@ -432,6 +438,25 @@ actually matters.
 **Trade-off**: the harness depends on other toolchains being installed, and
 needs disk space for their (very large) artifacts. It skips whatever is
 missing and reports that it skipped.
+
+### Strings and arrays allocate from a bump arena — no collector yet
+**Decision**: the first strings and arrays allocate from a single
+program-lifetime arena — a bump allocator in the C runtime — and nothing is
+ever reclaimed. String literals live in the object's static data; only
+concatenation and array growth allocate.
+**Why**: the language has no pointers a program can see, no destructors and
+no way to express a lifetime. There is nothing for a reference count or a
+tracing collector to *do*: a program cannot build a cycle it cannot break,
+and cannot observe a dangling value. A collector would also need the code
+generator to say which machine values are pointers — a shadow stack, or a
+pointer map per function — which is a large change to the backend for a
+feature that does not exist yet.
+**Trade-off**: a program that allocates in a loop grows without bound — the
+arena is never reset, so its high-water mark is the program's *total*
+allocation, not its live set. That is acceptable for the small numeric
+programs this subset is aimed at, and it is the honest reason a collector is
+a later item rather than a mistake in this one: the fix is a real collector
+with real backend support, not a tweak to the arena.
 
 ### Linking with the system C compiler
 **Decision**: emit an object file and run `cc` on it, rather than writing an

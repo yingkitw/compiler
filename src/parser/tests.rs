@@ -424,6 +424,92 @@ fn rejects_a_cast_to_void() {
 }
 
 #[test]
+fn a_compound_assignment_desugars_into_an_assignment() {
+    // `x += e` is `x = x + e` — the desugar is in the parser, so the AST
+    // holds the plain assignment.
+    match only_expr("x += 1;") {
+        Expr::Assign { name, value } => {
+            assert_eq!(name, "x");
+            match &*value {
+                Expr::Bin { op, lhs, rhs } => {
+                    assert_eq!(*op, BinOp::Add);
+                    assert!(matches!(&**lhs, Expr::Var(v) if v == "x"));
+                    assert!(matches!(&**rhs, Expr::Num(_)));
+                }
+                other => panic!("expected a binary expression, got {other:?}"),
+            }
+        }
+        other => panic!("expected an assignment, got {other:?}"),
+    }
+}
+
+#[test]
+fn every_compound_assignment_has_its_own_operator() {
+    for (src, op) in [
+        ("x += 1;", BinOp::Add),
+        ("x -= 1;", BinOp::Sub),
+        ("x *= 1;", BinOp::Mul),
+        ("x /= 1;", BinOp::Div),
+        ("x %= 1;", BinOp::Rem),
+    ] {
+        match only_expr(src) {
+            Expr::Assign { value, .. } => match &*value {
+                Expr::Bin { op: got, .. } => assert_eq!(*got, op, "for {src}"),
+                other => panic!("expected a binary expression, got {other:?}"),
+            },
+            other => panic!("expected an assignment, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn the_increment_forms_desugar_into_assignments() {
+    // Both `x++` and `++x` mean `x = x + 1`; they are statements, so the
+    // parser sees them where a statement is expected.
+    for src in ["x++;", "++x;"] {
+        let prog = parse_src(src);
+        match &prog.stmts[0] {
+            Stmt::Expr(Expr::Assign { name, value }) => {
+                assert_eq!(name, "x");
+                assert!(
+                    matches!(&**value, Expr::Bin { op: BinOp::Add, .. }),
+                    "expected an addition, got {value:?}"
+                );
+            }
+            other => panic!("expected an assignment statement, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn the_decrement_form_desugars_into_a_subtraction() {
+    let prog = parse_src("x--;");
+    match &prog.stmts[0] {
+        Stmt::Expr(Expr::Assign { value, .. }) => {
+            assert!(
+                matches!(&**value, Expr::Bin { op: BinOp::Sub, .. }),
+                "expected a subtraction, got {value:?}"
+            );
+        }
+        other => panic!("expected an assignment statement, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_increment_is_not_an_expression() {
+    // TypeScript's postfix `x++` yields the old value, which this subset
+    // does not model — so it is a statement, not an expression.
+    let err = parse_err("print(x++);");
+    assert!(err.contains("PlusPlus"), "got: {err}");
+}
+
+#[test]
+fn rejects_a_compound_assignment_to_something_that_is_not_a_variable() {
+    let err = parse_err("1 += 2;");
+    assert!(err.contains("invalid assignment target"), "got: {err}");
+}
+
+#[test]
 fn rejects_a_cast_to_a_non_type() {
     let err = parse_err("x as y;");
     assert!(err.contains("unsupported type 'y'"), "got: {err}");

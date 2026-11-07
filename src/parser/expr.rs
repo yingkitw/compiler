@@ -13,6 +13,40 @@ impl Parser {
 
     pub(super) fn assignment(&mut self) -> Result<Expr, String> {
         let lhs = self.logic_or()?;
+        // A compound assignment is sugar: `x += e` is `x = x + e`. The
+        // desugar is here rather than in the code generator, so the AST and
+        // the type rules need no new case at all — the assignment's own
+        // rules (the target must be a variable, the types must match) apply
+        // unchanged.
+        let op = match self.peek() {
+            Tok::PlusEq => Some(BinOp::Add),
+            Tok::MinusEq => Some(BinOp::Sub),
+            Tok::StarEq => Some(BinOp::Mul),
+            Tok::SlashEq => Some(BinOp::Div),
+            Tok::PercentEq => Some(BinOp::Rem),
+            _ => None,
+        };
+        if let Some(op) = op {
+            self.bump();
+            self.enter()?;
+            self.deepen()?;
+            let value = self.assignment()?;
+            self.leave();
+            return match lhs {
+                Expr::Var(name) => Ok(Expr::Assign {
+                    name: name.clone(),
+                    value: Box::new(Expr::Bin {
+                        op,
+                        lhs: Box::new(Expr::Var(name)),
+                        rhs: Box::new(value),
+                    }),
+                }),
+                _ => Err(format!(
+                    "line {}: invalid assignment target",
+                    self.line()
+                )),
+            };
+        }
         if self.eat(&Tok::Assign) {
             let value = self.assignment()?;
             return match lhs {

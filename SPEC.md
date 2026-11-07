@@ -61,6 +61,9 @@ initializer. Annotations are mandatory for parameters.
   nest).
 - **Keywords**: `let`, `const`, `function`, `if`, `else`, `while`, `for`,
   `as`, `return`, `true`, `false`.
+- **Operators**: `+=`, `-=`, `*=`, `/=`, `%=`, `++` and `--` are tokens of
+  their own; they are sugar for the assignments they stand for (see
+  *Statements*).
 - **Type names**: `number`, `int`, `boolean`, `void`. These are ordinary
   identifiers — `let number = 5;` is legal — and they name a type only when
   they appear in a type-annotation position.
@@ -98,6 +101,8 @@ returnStmt   ::= "return" expr? ";" ;
 block        ::= "{" statement* "}" ;
 stmtOrBlock  ::= block | statement ;
 exprStmt     ::= expr ";" ;
+stepStmt     ::= ("++" | "--") IDENT ";" ;   (* the prefix form *)
+               (* the postfix form is `expr ("++" | "--") ";"` *)
 
 expr         ::= assignment ;
 assignment   ::= orExpr ("=" assignment)? ;   (* LHS must be a variable *)
@@ -125,7 +130,8 @@ equality → relational → additive → multiplicative (`*`, `/`, `%`) → unar
 call → primary.
 Assignment is right-associative; all binary operators are left-associative.
 
-**Not supported**: `++`, `--`, compound assignment, `? :`, `do`,
+**Not supported**: compound logical assignment (`&&=`, `||=`), `? :`,
+`do`,
 `switch`, `break`, `continue`, `throw`, `try`, object literals, array literals,
 string literals, `new`, `typeof`, `instanceof`, `in`, `of`, `delete`, `void`
 operator, generics, classes, modules, arrow functions.
@@ -160,6 +166,15 @@ JavaScript's `%`.
   `return;`; a value-returning function must `return <value>;` on every path.
 - **Block** — introduces a new scope.
 - **Expression statement** — evaluates an expression and discards the result.
+- **Compound assignment** — `x += e` means `x = x + e`, and likewise `-=`,
+  `*=`, `/=` and `%=`. The target must be a variable, and the result must
+  have the variable's type — the rules are those of the assignment it stands
+  for.
+- **Increment and decrement** — `x++`, `++x`, `x--` and `--x` mean
+  `x = x + 1` and `x = x - 1`. They are *statements*, not expressions:
+  TypeScript's postfix `x++` yields the old value of `x`, which this subset
+  does not model, so `print(x++)` is a parse error rather than a program
+  that quietly means something else.
 
 ### Entry points
 

@@ -437,3 +437,47 @@ fn a_cast_result_participates_in_arithmetic() {
     let err = type_error("let n = 1.5; let m: int = 2; let s: int = n + m;");
     assert!(err.contains("arithmetic operators"), "got: {err}");
 }
+
+#[test]
+fn accepts_the_compound_assignments() {
+    compiles("let x = 1; x += 2; print(x);");
+    compiles("let x = 1; x -= 2; print(x);");
+    compiles("let x = 1; x *= 2; print(x);");
+    compiles("let x = 1; x /= 2; print(x);");
+    compiles("let x = 1; x %= 2; print(x);");
+    compiles("let x: int = 1; x += 2; print(x);");
+}
+
+#[test]
+fn accepts_the_increment_operators() {
+    compiles("let x = 1; x++; print(x);");
+    compiles("let x = 1; ++x; print(x);");
+    compiles("let x = 1; x--; print(x);");
+    compiles("let x = 1; --x; print(x);");
+    compiles("let x: int = 1; x++; print(x);");
+}
+
+#[test]
+fn a_compound_assignment_cannot_reassign_a_const() {
+    let err = type_error("const x = 1; x += 2;");
+    assert!(err.contains("cannot assign to const 'x'"), "got: {err}");
+}
+
+#[test]
+fn an_increment_cannot_reassign_a_const() {
+    let err = type_error("const x = 1; x++;");
+    assert!(err.contains("cannot assign to const 'x'"), "got: {err}");
+}
+
+#[test]
+fn a_compound_assignment_type_checks_like_the_assignment_it_desugars_to() {
+    // `x += 1` is `x = x + 1`, so a boolean is refused for the same reason
+    // `x = x + 1` is.
+    let err = type_error("let b = true; b += 1;");
+    assert!(err.contains("arithmetic operators"), "got: {err}");
+    // And the types must still match: an `int` variable cannot take a
+    // `number` result — the desugared `x = x + 1.5` is refused for the
+    // same reason `x = x + 1.5` is.
+    let err = type_error("let x: int = 1; x += 1.5;");
+    assert!(err.contains("arithmetic operators"), "got: {err}");
+}

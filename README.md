@@ -106,6 +106,7 @@ for (let j = 0; j < 5; j = j + 1) {
 print(total);                 // 0 + 1 + 4 + 9 + 16 = 30
 
 // Operators:  + - * / %   == != < <= > >=   && || (short-circuit)   !   unary -
+//            += -= *= /= %=   ++ --
 // Truthiness: a number is false iff it equals 0.
 
 // Entry points: top-level statements run first, then main() if you define one.
@@ -202,7 +203,7 @@ Read [ARCHITECTURE.md](ARCHITECTURE.md) for the full design rationale, and
 ## Not supported yet
 
 Strings, arrays, objects, classes, closures, generics, modules, `do`/
-`switch`, `continue`/`break`, `++`/`--`, compound assignment, `? :`,
+`switch`, `continue`/`break`, logical assignment, `? :`,
 `throw`/`try`, and arrow functions. `void` is a return type only — a
 variable or a parameter cannot have it. The full list is in
 [SPEC.md](SPEC.md).

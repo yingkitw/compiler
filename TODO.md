@@ -84,6 +84,16 @@
       divisor compiles to a byte-identical object file.
       Evidence and method: MEMORY.md → *Replaying the Descent* and *The Stride
       Is the GCD, Not the Difference*.
+- [x] **The assignment sugars** — `x += e`, `x -= e`, `x *= e`, `x /= e`,
+      `x %= e`, and the increment operators `x++`, `++x`, `x--`, `--x`. They
+      are desugared *in the parser*: `x += e` becomes `x = x + e` and `x++`
+      becomes `x = x + 1`, so the AST, the code generator and the type rules
+      needed no new case at all — the assignment's own rules apply unchanged
+      (the target must be a variable, it must not be a `const`, the
+      arithmetic must type-check). The increment operators are statements
+      rather than expressions, because TypeScript's postfix `x++` yields the
+      *old* value, which this subset does not model; `print(x++)` is a parse
+      error rather than a silently different program
 - [x] **No file exceeds ~450 lines** — the audit convention (AGENTS.md Step
       6a) is now checked by hand and by the scorecard, and the two files
       that had crossed the line are split:
@@ -203,16 +213,17 @@
       lines. The split was a *move*, verified by the test suite — the object
       files it produces are byte-for-byte identical to the ones the single
       files produced
-- [x] **146 inline unit tests + 48 integration tests** — all passing; `cargo clippy
+- [x] **158 inline unit tests + 49 integration tests** — all passing; `cargo clippy
       --all-targets` exits 0; doc-sync enforced by `tests/docs_sync.rs`
-- [x] **Inline unit tests for the lexer, parser, and type rules** — 13 lexer tests
+- [x] **Inline unit tests for the lexer, parser, and type rules** — 14 lexer tests
       (token kinds, comments, line tracking, exact integer literals, lex errors),
-      35 parser tests (precedence, associativity, statement forms including
-      `for` and `as` casts, parse errors), 58 codegen tests (every type rule in
-      `FnGen`, the `int` type, the cast rules, the runtime entry points, plus
-      acceptance cases for scoping, shadowing, recursion, and forward
-      references), and 40 rewrite tests (every shape the tail-call and
-      recurrence rewrites accept, and every shape they must refuse)
+      41 parser tests (precedence, associativity, statement forms including
+      `for`, `as` casts and the assignment sugars, parse errors), 61 codegen
+      tests (every type rule in `FnGen`, the `int` type, the cast rules, the
+      runtime entry points, plus acceptance cases for scoping, shadowing,
+      recursion, and forward references), and 42 rewrite tests (every shape
+      the tail-call and recurrence rewrites accept, and every shape they must
+      refuse)
 - [x] **Sanitizer, ABI and fuzz gates** — `tests/sanitize.rs` compiles every
       example with the address and undefined-behaviour sanitizers and runs it
       (skipping itself when the sanitizers are unavailable);
@@ -287,10 +298,12 @@
 ### High priority
 - [ ] **Strings** — add a `string` type (UTF-8 bytes + length, not a Rust
       `String`), string literals in the lexer, `+` concatenation, `print`
-      support, comparison operators. Needs a GC or arena decision first — see
-      ARCHITECTURE.md
+      support, comparison operators. The allocation strategy is decided —
+      a program-lifetime bump arena, no collector (ARCHITECTURE.md → *Strings
+      and arrays allocate from a bump arena*) — so the work is the lexer,
+      the type and the runtime's string helpers
 - [ ] **Arrays** — `number[]` and `boolean[]` with bounds-checked indexing, `push`,
-      `length`. Same allocation strategy decision as strings
+      `length`. The same arena decides their allocation (ARCHITECTURE.md)
 - [ ] **`for (const x of arr)`** — needs arrays first (the C-style `for` is
       done); a `for-of` desugars into an index loop over `arr[i]`, which needs
       `arr.length` and bounds-checked indexing
@@ -302,8 +315,6 @@
       name and also install a second, unambiguous name (`tscc`); or rename
       outright. `--version` now answers sanely, which removes the worst of the
       clash, but the shadowing itself remains
-- [ ] **`++` / `--` operators** — prefix and postfix forms
-- [ ] **Compound assignment** — `+=`, `-=`, `*=`, `/=`
 - [ ] **Logical assignment** — `&&=`, `||=`
 - [ ] **Blocks as expressions** — `const x = { let y = 1; y + 1; }`
 - [ ] **Conditional expression** — `cond ? a : b`

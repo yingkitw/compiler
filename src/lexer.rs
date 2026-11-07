@@ -30,6 +30,15 @@ pub enum Tok {
     Star,
     Slash,
     Percent,
+    /// `+=`, `-=`, `*=`, `/=`, `%=` — the compound assignments.
+    PlusEq,
+    MinusEq,
+    StarEq,
+    SlashEq,
+    PercentEq,
+    /// `++` and `--` — the increment and decrement operators.
+    PlusPlus,
+    MinusMinus,
     EqEq,
     BangEq,
     Lt,
@@ -157,21 +166,49 @@ pub fn lex(src: &str) -> Result<Vec<Token>, String> {
                 out.push(Token { tok: Tok::Colon, line });
                 i += 1;
             }
+            '+' if chars.get(i + 1) == Some(&'=') => {
+                out.push(Token { tok: Tok::PlusEq, line });
+                i += 2;
+            }
+            '+' if chars.get(i + 1) == Some(&'+') => {
+                out.push(Token { tok: Tok::PlusPlus, line });
+                i += 2;
+            }
             '+' => {
                 out.push(Token { tok: Tok::Plus, line });
                 i += 1;
+            }
+            '-' if chars.get(i + 1) == Some(&'=') => {
+                out.push(Token { tok: Tok::MinusEq, line });
+                i += 2;
+            }
+            '-' if chars.get(i + 1) == Some(&'-') => {
+                out.push(Token { tok: Tok::MinusMinus, line });
+                i += 2;
             }
             '-' => {
                 out.push(Token { tok: Tok::Minus, line });
                 i += 1;
             }
+            '*' if chars.get(i + 1) == Some(&'=') => {
+                out.push(Token { tok: Tok::StarEq, line });
+                i += 2;
+            }
             '*' => {
                 out.push(Token { tok: Tok::Star, line });
                 i += 1;
             }
+            '/' if chars.get(i + 1) == Some(&'=') => {
+                out.push(Token { tok: Tok::SlashEq, line });
+                i += 2;
+            }
             '/' => {
                 out.push(Token { tok: Tok::Slash, line });
                 i += 1;
+            }
+            '%' if chars.get(i + 1) == Some(&'=') => {
+                out.push(Token { tok: Tok::PercentEq, line });
+                i += 2;
             }
             '%' => {
                 out.push(Token { tok: Tok::Percent, line });
@@ -261,6 +298,41 @@ mod tests {
         assert_eq!(
             kinds("x as int"),
             vec![Tok::Ident("x".into()), Tok::As, Tok::Ident("int".into())]
+        );
+    }
+
+    #[test]
+    fn lexes_the_compound_assignments_and_the_step_operators() {
+        assert_eq!(
+            kinds("x += 1; y -= 2; z *= 3; w /= 4; v %= 5; x++; --y;"),
+            vec![
+                Tok::Ident("x".into()),
+                Tok::PlusEq,
+                num(1.0, Some(1)),
+                Tok::Semi,
+                Tok::Ident("y".into()),
+                Tok::MinusEq,
+                num(2.0, Some(2)),
+                Tok::Semi,
+                Tok::Ident("z".into()),
+                Tok::StarEq,
+                num(3.0, Some(3)),
+                Tok::Semi,
+                Tok::Ident("w".into()),
+                Tok::SlashEq,
+                num(4.0, Some(4)),
+                Tok::Semi,
+                Tok::Ident("v".into()),
+                Tok::PercentEq,
+                num(5.0, Some(5)),
+                Tok::Semi,
+                Tok::Ident("x".into()),
+                Tok::PlusPlus,
+                Tok::Semi,
+                Tok::MinusMinus,
+                Tok::Ident("y".into()),
+                Tok::Semi,
+            ]
         );
     }
 

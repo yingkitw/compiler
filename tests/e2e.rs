@@ -50,6 +50,16 @@ fn cast() {
 }
 
 #[test]
+fn operators() {
+    // The compound assignments and the increment operators, compiled and
+    // run: the example documents each figure.
+    assert_eq!(
+        compile_and_run("operators"),
+        "3\n2\n20\n5\n2\n3\n4\n3\n2\n6\n16\n6\n"
+    );
+}
+
+#[test]
 fn rejects_a_cast_of_a_boolean_end_to_end() {
     compile_fails("print(true as int);", "cannot cast boolean to int");
 }

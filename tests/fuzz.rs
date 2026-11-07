@@ -19,7 +19,8 @@ const TOKENS: &[&str] = &[
     "let", "const", "function", "if", "else", "while", "for", "as", "return",
     "true", "false", "number", "int", "boolean", "void", "print", "x", "y", "n",
     "f", "42", "3.5", "(", ")", "{", "}", ";", ",", ":", "=", "==", "!=", "<",
-    "<=", ">", ">=", "+", "-", "*", "/", "%", "&&", "||", "!",
+    "<=", ">", ">=", "+", "-", "*", "/", "%", "&&", "||", "!", "+=", "-=", "*=",
+    "/=", "%=", "++", "--",
 ];
 
 /// A tiny linear congruential generator, so that a failing case can be
