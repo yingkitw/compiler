@@ -46,7 +46,7 @@ over about 450 lines:
 | Module | Files | What is in them |
 |---|---|---|
 | `parser/` | `mod.rs`, `stmt.rs`, `expr.rs`, `tests.rs` | the token helpers and the statement dispatch; the statement forms; one method per precedence level |
-| `rewrite/` | `mod.rs`, `common.rs`, `tail_call/`, `recurrence/` | the entry point and the shared predicates; each rewrite with its own tests |
+| `rewrite/` | `mod.rs`, `common.rs`, `tail_call/`, `recurrence/` | the entry point and the shared predicates; each rewrite with its own tests; the recurrence split into recognising the shape (`recognize.rs`) and building the loop (`build.rs`) |
 | `codegen/` | `mod.rs`, `ty.rs`, `runtime.rs`, `stmt.rs`, `expr.rs`, `tests.rs` | `compile()` and the function builder; the type lattice; the C shim; statement and expression generation |
 
 ### `main.rs` — CLI entry point
@@ -114,6 +114,11 @@ over about 450 lines:
 - `common.rs` holds what both rewrites share: the predicates ("is this
   expression free of side effects?") and the name helpers ("which names does
   this program already use?").
+- The recurrence rewrite is split in two: `recognize.rs` decides whether a
+  function has the recurrence shape (and gives up if it does not), and
+  `build.rs` rewrites the function it recognised. The seam is the one the
+  module already had — a rewrite that fires on the wrong program is a
+  miscompile, so the half that says no is worth its own file.
 - **Tail-call elimination**: a self-recursive call in tail position becomes a
   loop. A function whose body is
   ```

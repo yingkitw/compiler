@@ -10,6 +10,7 @@ pub fn out_dir() -> PathBuf {
     dir
 }
 
+#[allow(dead_code)] // used by the e2e and recurrence tests only
 pub fn compile_example(example: &str) -> PathBuf {
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("examples")
@@ -26,6 +27,7 @@ pub fn compile_example(example: &str) -> PathBuf {
     bin
 }
 
+#[allow(dead_code)] // used by the e2e and recurrence tests only
 pub fn compile_and_run(example: &str) -> String {
     let bin = compile_example(example);
 

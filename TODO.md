@@ -62,6 +62,20 @@
       `Expr::Cast` variant wired into the codegen and every rewrite walker;
       a first cut's precedence bug was caught by an AST-shape unit test
       before it shipped
+- [x] **No file exceeds ~450 lines** — the audit convention (AGENTS.md Step
+      6a) is now checked by hand and by the scorecard, and the two files
+      that had crossed the line are split:
+      - `src/rewrite/recurrence/mod.rs` (629) became `mod.rs` (the entry
+        point and the shared types), `recognize.rs` (the half that decides
+        whether a function has the recurrence shape) and `build.rs` (the half
+        that rewrites it) — the seam the module already had;
+      - `tests/rewrite.rs` (570) became `tests/rewrite_tail_call.rs` and
+        `tests/rewrite_recurrence.rs`, one file per rewrite.
+      Both were pure *moves*: the same unit tests before and after, the
+      code extracted with `sed` rather than retyped, and `pub(super)` only
+      on the calls that cross the new boundary. The proof is the object
+      files: all twelve examples compile to byte-identical SHA-256s before
+      and after, so the split changed no generated code.
 - [x] **Measured what the `int` type is worth** (`scripts/bench_int.py`,
       interleaved rounds, min-of-N): **1.20x** on arithmetic-only code, **2.44x**
       on a function call per iteration, and **0.83x** — a small loss — on
@@ -270,15 +284,6 @@
       `arr.length` and bounds-checked indexing
 
 ### Medium priority
-- [ ] **Split the two files that crossed the ~450-line convention** — the audit
-      convention (AGENTS.md Step 6) is that no file exceeds ~450 lines, and two
-      now do: `src/rewrite/recurrence/mod.rs` (629, grown by the `number`-
-      parameter work) and `tests/rewrite.rs` (570). Success criterion: both
-      files split along their existing seams as a pure *move* — same unit
-      tests before and after, `pub(super)` for cross-file methods — proven by
-      byte-identical object-file SHA-256s, per MEMORY.md → *Splitting a Module
-      Without Changing It*. Do it after the `number`-recurrence item lands,
-      not mid-flight.
 - [ ] **Decide the binary name** — `cargo install compiler` currently installs a
       command called `tsc`, the same name as TypeScript's official compiler, and
       ours shadows it when earlier on `PATH`. Options: keep `tsc` as the primary
@@ -432,11 +437,12 @@ SPEC (grammar included), ARCHITECTURE, TODO, AGENTS and MEMORY all describe
 the desugar, and the two doc-sync count gates pass at 121 inline + 45
 integration tests. One wrong arithmetic comment in the example itself
 (`129` for a sum of `130`) was caught by the audit and fixed.
-*Maintainability caveat, recorded the same day: with the `as` casts and the
-`number`-recurrence work landed, two files exceed the ~450-line convention —
-`src/rewrite/recurrence/mod.rs` (629) and `tests/rewrite.rs` (570). The
-scorecard's Maintainability 5 is therefore provisional; the splits are a
-TODO item with the move-and-prove method named.*
+*Maintainability caveat, recorded the same day and settled the same day:
+with the `as` casts and the `number`-recurrence work landed, two files
+exceeded the ~450-line convention — `src/rewrite/recurrence/mod.rs` (629)
+and `tests/rewrite.rs` (570). Both are now split (see Done), proven by
+byte-identical object-file SHA-256s, and AGENTS.md Step 6a makes the check
+standing rather than advisory.*
 
 **Evidence (2026-11-05, post-doc-audit)**: an audit of every markdown file
 against the code. It found one real bug and a dozen drifts.
