@@ -84,6 +84,23 @@
       divisor compiles to a byte-identical object file.
       Evidence and method: MEMORY.md → *Replaying the Descent* and *The Stride
       Is the GCD, Not the Difference*.
+- [x] **The compiler is a quarter faster, and no file is over 450 lines** —
+      measured, not asserted:
+      - **Cranelift's verifier is off in release builds** (it stays on in
+        debug, so the test suite still has it): the code generator is **23%
+        faster**.
+      - **Cranelift's `timing` feature is dropped** — it is in the crate's
+        default features, and it costs a `clock_gettime` per pass: another
+        **4%**.
+      - `src/parser/tests.rs` (516 lines) and `src/codegen/tests.rs` (483)
+        are split into `stmts`/`exprs`/`errors` and `types`/`errors`/
+        `programs`; the lexer's operator arms moved into a helper, so `lex`
+        is 125 lines rather than 203. No file in the tree is now over the
+        450-line convention.
+      Every one of these is a pure move, and the proof is the same in all
+      four cases: all twelve examples compile to byte-identical object files
+      before and after, so no generated code changed — which is why no
+      benchmark needed re-running.
 - [x] **The assignment sugars** — `x += e`, `x -= e`, `x *= e`, `x /= e`,
       `x %= e`, and the increment operators `x++`, `++x`, `x--`, `--x`. They
       are desugared *in the parser*: `x += e` becomes `x = x + e` and `x++`
@@ -448,6 +465,7 @@ Recorded per AGENTS.md Step 7. Total is /30.
 | 2026-11-03 (post-audit) | 5 | 5 | 5 | 5 | 5 | 5 | 30 |
 | 2026-11-05 (post-doc-audit) | 5 | 5 | 5 | 5 | 5 | 5 | 30 |
 | 2026-11-07 (post-for-loop) | 5 | 5 | 5 | 5 | 5 | 5 | 30 |
+| 2026-11-07 (post-performance) | 5 | 5 | 5 | 5 | 5 | 5 | 30 |
 
 **Evidence (2026-11-07, post-for-loop)**: the C-style `for` loop landed as a
 parser-level desugar — no AST variant, no codegen arm, no runtime change — so
@@ -465,7 +483,10 @@ with the `as` casts and the `number`-recurrence work landed, two files
 exceeded the ~450-line convention — `src/rewrite/recurrence/mod.rs` (629)
 and `tests/rewrite.rs` (570). Both are now split (see Done), proven by
 byte-identical object-file SHA-256s, and AGENTS.md Step 6a makes the check
-standing rather than advisory.*
+standing rather than advisory. The same pass found two more over the line
+(the parser's and the code generator's test files) and a 203-line `lex`
+function; all are now split, so no file in the tree is over the
+convention.*
 
 **Evidence (2026-11-05, post-doc-audit)**: an audit of every markdown file
 against the code. It found one real bug and a dozen drifts.

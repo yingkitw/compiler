@@ -37,6 +37,13 @@ pub fn compile(prog: &Program) -> Result<Vec<u8>, String> {
     flag_builder
         .set("is_pic", "true")
         .map_err(|e| e.to_string())?;
+    // The verifier re-checks the IR Cranelift built. It is a debugging aid,
+    // and a costly one: it is worth several percent of the compile time.
+    // Debug builds keep it — the whole test suite runs there, so a code
+    // generation bug is still caught — and release builds drop it.
+    flag_builder
+        .set("enable_verifier", if cfg!(debug_assertions) { "true" } else { "false" })
+        .map_err(|e| e.to_string())?;
     let isa = isa::lookup(triple.clone())
         .map_err(|e| e.to_string())?
         .finish(settings::Flags::new(flag_builder))

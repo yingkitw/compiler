@@ -57,6 +57,41 @@ pub struct Token {
     pub line: u32,
 }
 
+/// The operator tokens: one character, or two when they are written with an
+/// `=` or a doubled sign.
+///
+/// Returns the token and how many characters it took. The caller has
+/// already handled the comments, so a `/` here is the division operator
+/// and not the start of a comment.
+fn operator(chars: &[char], i: usize) -> Option<(Tok, usize)> {
+    let c = *chars.get(i)?;
+    match c {
+        '+' if chars.get(i + 1) == Some(&'=') => Some((Tok::PlusEq, 2)),
+        '+' if chars.get(i + 1) == Some(&'+') => Some((Tok::PlusPlus, 2)),
+        '+' => Some((Tok::Plus, 1)),
+        '-' if chars.get(i + 1) == Some(&'=') => Some((Tok::MinusEq, 2)),
+        '-' if chars.get(i + 1) == Some(&'-') => Some((Tok::MinusMinus, 2)),
+        '-' => Some((Tok::Minus, 1)),
+        '*' if chars.get(i + 1) == Some(&'=') => Some((Tok::StarEq, 2)),
+        '*' => Some((Tok::Star, 1)),
+        '/' if chars.get(i + 1) == Some(&'=') => Some((Tok::SlashEq, 2)),
+        '/' => Some((Tok::Slash, 1)),
+        '%' if chars.get(i + 1) == Some(&'=') => Some((Tok::PercentEq, 2)),
+        '%' => Some((Tok::Percent, 1)),
+        '=' if chars.get(i + 1) == Some(&'=') => Some((Tok::EqEq, 2)),
+        '=' => Some((Tok::Assign, 1)),
+        '!' if chars.get(i + 1) == Some(&'=') => Some((Tok::BangEq, 2)),
+        '!' => Some((Tok::Bang, 1)),
+        '<' if chars.get(i + 1) == Some(&'=') => Some((Tok::LtEq, 2)),
+        '<' => Some((Tok::Lt, 1)),
+        '>' if chars.get(i + 1) == Some(&'=') => Some((Tok::GtEq, 2)),
+        '>' => Some((Tok::Gt, 1)),
+        '&' if chars.get(i + 1) == Some(&'&') => Some((Tok::AndAnd, 2)),
+        '|' if chars.get(i + 1) == Some(&'|') => Some((Tok::OrOr, 2)),
+        _ => None,
+    }
+}
+
 pub fn lex(src: &str) -> Result<Vec<Token>, String> {
     let chars: Vec<char> = src.chars().collect();
     let mut out = Vec::new();
@@ -166,95 +201,17 @@ pub fn lex(src: &str) -> Result<Vec<Token>, String> {
                 out.push(Token { tok: Tok::Colon, line });
                 i += 1;
             }
-            '+' if chars.get(i + 1) == Some(&'=') => {
-                out.push(Token { tok: Tok::PlusEq, line });
-                i += 2;
+            _ => {
+                // The operators are one character, or two when they are
+                // written with an `=` or a doubled sign. The comments have
+                // already been handled, so a `/` here is division.
+                if let Some((tok, len)) = operator(&chars, i) {
+                    out.push(Token { tok, line });
+                    i += len;
+                } else {
+                    err!("unexpected character '{}'", c);
+                }
             }
-            '+' if chars.get(i + 1) == Some(&'+') => {
-                out.push(Token { tok: Tok::PlusPlus, line });
-                i += 2;
-            }
-            '+' => {
-                out.push(Token { tok: Tok::Plus, line });
-                i += 1;
-            }
-            '-' if chars.get(i + 1) == Some(&'=') => {
-                out.push(Token { tok: Tok::MinusEq, line });
-                i += 2;
-            }
-            '-' if chars.get(i + 1) == Some(&'-') => {
-                out.push(Token { tok: Tok::MinusMinus, line });
-                i += 2;
-            }
-            '-' => {
-                out.push(Token { tok: Tok::Minus, line });
-                i += 1;
-            }
-            '*' if chars.get(i + 1) == Some(&'=') => {
-                out.push(Token { tok: Tok::StarEq, line });
-                i += 2;
-            }
-            '*' => {
-                out.push(Token { tok: Tok::Star, line });
-                i += 1;
-            }
-            '/' if chars.get(i + 1) == Some(&'=') => {
-                out.push(Token { tok: Tok::SlashEq, line });
-                i += 2;
-            }
-            '/' => {
-                out.push(Token { tok: Tok::Slash, line });
-                i += 1;
-            }
-            '%' if chars.get(i + 1) == Some(&'=') => {
-                out.push(Token { tok: Tok::PercentEq, line });
-                i += 2;
-            }
-            '%' => {
-                out.push(Token { tok: Tok::Percent, line });
-                i += 1;
-            }
-            '=' if chars.get(i + 1) == Some(&'=') => {
-                out.push(Token { tok: Tok::EqEq, line });
-                i += 2;
-            }
-            '=' => {
-                out.push(Token { tok: Tok::Assign, line });
-                i += 1;
-            }
-            '!' if chars.get(i + 1) == Some(&'=') => {
-                out.push(Token { tok: Tok::BangEq, line });
-                i += 2;
-            }
-            '!' => {
-                out.push(Token { tok: Tok::Bang, line });
-                i += 1;
-            }
-            '<' if chars.get(i + 1) == Some(&'=') => {
-                out.push(Token { tok: Tok::LtEq, line });
-                i += 2;
-            }
-            '<' => {
-                out.push(Token { tok: Tok::Lt, line });
-                i += 1;
-            }
-            '>' if chars.get(i + 1) == Some(&'=') => {
-                out.push(Token { tok: Tok::GtEq, line });
-                i += 2;
-            }
-            '>' => {
-                out.push(Token { tok: Tok::Gt, line });
-                i += 1;
-            }
-            '&' if chars.get(i + 1) == Some(&'&') => {
-                out.push(Token { tok: Tok::AndAnd, line });
-                i += 2;
-            }
-            '|' if chars.get(i + 1) == Some(&'|') => {
-                out.push(Token { tok: Tok::OrOr, line });
-                i += 2;
-            }
-            _ => err!("unexpected character '{}'", c),
         }
     }
     out.push(Token { tok: Tok::Eof, line });
