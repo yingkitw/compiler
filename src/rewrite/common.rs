@@ -33,6 +33,8 @@ pub(crate) fn is_pure_at(expr: &Expr, depth: usize) -> bool {
         Expr::Num(_) | Expr::Bool(_) | Expr::Var(_) => true,
         Expr::Bin { lhs, rhs, .. } => is_pure_at(lhs, depth + 1) && is_pure_at(rhs, depth + 1),
         Expr::Un { expr, .. } => is_pure_at(expr, depth + 1),
+        // A cast is a pure conversion: it writes nothing and calls nothing.
+        Expr::Cast { expr, .. } => is_pure_at(expr, depth + 1),
         Expr::Call { .. } => false,
         Expr::Assign { .. } => false,
     }
@@ -56,6 +58,7 @@ pub(crate) fn contains_assign_at(expr: &Expr, depth: usize) -> bool {
             contains_assign_at(lhs, depth + 1) || contains_assign_at(rhs, depth + 1)
         }
         Expr::Un { expr, .. } => contains_assign_at(expr, depth + 1),
+        Expr::Cast { expr, .. } => contains_assign_at(expr, depth + 1),
         Expr::Call { args, .. } => args.iter().any(|a| contains_assign_at(a, depth + 1)),
         Expr::Assign { .. } => true,
     }
@@ -79,6 +82,7 @@ pub(crate) fn contains_call_to_at(expr: &Expr, name: &str, depth: usize) -> bool
             contains_call_to_at(lhs, name, depth + 1) || contains_call_to_at(rhs, name, depth + 1)
         }
         Expr::Un { expr, .. } => contains_call_to_at(expr, name, depth + 1),
+        Expr::Cast { expr, .. } => contains_call_to_at(expr, name, depth + 1),
         Expr::Call {
             name: callee,
             args,
@@ -161,6 +165,7 @@ pub(crate) fn collect_expr_names_at(expr: &Expr, out: &mut Vec<String>, depth: u
             collect_expr_names_at(rhs, out, depth + 1);
         }
         Expr::Un { expr, .. } => collect_expr_names_at(expr, out, depth + 1),
+        Expr::Cast { expr, .. } => collect_expr_names_at(expr, out, depth + 1),
         Expr::Call { name, args } => {
             out.push(name.clone());
             for arg in args {

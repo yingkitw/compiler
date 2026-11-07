@@ -11,6 +11,7 @@ pub enum Tok {
     Else,
     While,
     For,
+    As,
     Return,
     True,
     False,
@@ -100,6 +101,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, String> {
                     "else" => Tok::Else,
                     "while" => Tok::While,
                     "for" => Tok::For,
+                    "as" => Tok::As,
                     "return" => Tok::Return,
                     "true" => Tok::True,
                     "false" => Tok::False,
@@ -249,6 +251,16 @@ mod tests {
                 Tok::True,
                 Tok::Semi
             ]
+        );
+    }
+
+    #[test]
+    fn lexes_as_as_a_keyword_and_type_names_as_identifiers() {
+        // `as` is a keyword, but the type names after it stay ordinary
+        // identifiers — the parser decides what they mean.
+        assert_eq!(
+            kinds("x as int"),
+            vec![Tok::Ident("x".into()), Tok::As, Tok::Ident("int".into())]
         );
     }
 

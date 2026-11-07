@@ -78,6 +78,20 @@ impl Parser {
     pub(super) fn comparison(&mut self) -> Result<Expr, String> {
         let mut lhs = self.term()?;
         loop {
+            // An `as` cast has the precedence of the relational operators
+            // and wraps the whole expression accumulated to its left —
+            // `1 + 2 as int` is `(1 + 2) as int` — while a tighter operator
+            // may still follow the cast, so `x as int + 1` is
+            // `(x as int) + 1`. Both are TypeScript's behaviour.
+            if self.eat(&Tok::As) {
+                let ty = self.type_annotation()?;
+                if ty == Type::Void {
+                    return Err(format!("line {}: cannot cast to 'void'", self.line()));
+                }
+                lhs = Expr::Cast { expr: Box::new(lhs), ty };
+                lhs = self.tight_tail(lhs)?;
+                continue;
+            }
             let op = match self.peek() {
                 Tok::Lt => BinOp::Lt,
                 Tok::LtEq => BinOp::Le,
@@ -88,6 +102,43 @@ impl Parser {
             self.bump();
             self.deepen()?;
             let rhs = self.term()?;
+            lhs = Expr::Bin {
+                op,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            };
+        }
+        Ok(lhs)
+    }
+
+    /// The tighter operators a cast may be followed by: multiplication and
+    /// division before addition and subtraction, so `x as int + 1 * 2` is
+    /// `(x as int) + (1 * 2)`.
+    fn tight_tail(&mut self, mut lhs: Expr) -> Result<Expr, String> {
+        loop {
+            let op = match self.peek() {
+                Tok::Star => BinOp::Mul,
+                Tok::Slash => BinOp::Div,
+                Tok::Percent => BinOp::Rem,
+                _ => break,
+            };
+            self.bump();
+            let rhs = self.unary()?;
+            lhs = Expr::Bin {
+                op,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            };
+        }
+        loop {
+            let op = match self.peek() {
+                Tok::Plus => BinOp::Add,
+                Tok::Minus => BinOp::Sub,
+                _ => break,
+            };
+            self.bump();
+            self.deepen()?;
+            let rhs = self.factor()?;
             lhs = Expr::Bin {
                 op,
                 lhs: Box::new(lhs),

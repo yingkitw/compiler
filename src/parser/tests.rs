@@ -340,3 +340,91 @@ fn reports_the_line_of_the_error() {
     let err = parse_err("let a = 1;\nlet b = 2;\nlet c;");
     assert!(err.starts_with("line 3:"), "got: {err}");
 }
+
+#[test]
+fn parses_a_bare_cast() {
+    match only_expr("x as int;") {
+        Expr::Cast { expr, ty } => {
+            assert!(matches!(&*expr, Expr::Var(v) if v == "x"));
+            assert_eq!(ty, Type::Int);
+        }
+        other => panic!("expected a cast, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_cast_wraps_the_expression_to_its_left() {
+    // TypeScript's effective precedence: `1 + 2 as int` is `(1 + 2) as int`.
+    match only_expr("1 + 2 as int;") {
+        Expr::Cast { expr, ty } => {
+            assert_eq!(ty, Type::Int);
+            assert!(
+                matches!(&*expr, Expr::Bin { op: BinOp::Add, .. }),
+                "expected the cast to wrap the sum, got {expr:?}"
+            );
+        }
+        other => panic!("expected a cast, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_cast_result_keeps_taking_operators() {
+    // `x as int * 3` is `(x as int) * 3`, not `x as (int * 3)`.
+    match only_expr("x as int * 3;") {
+        Expr::Bin { op: BinOp::Mul, lhs, .. } => {
+            assert!(
+                matches!(&*lhs, Expr::Cast { ty: Type::Int, .. }),
+                "expected the cast to be the left operand, got {lhs:?}"
+            );
+        }
+        other => panic!("expected a multiplication, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_cast_after_a_comparison_wraps_the_whole_comparison() {
+    // `a < b as int` is `(a < b) as int` — TypeScript's precedence — which
+    // is then a type error: the comparison yields a boolean.
+    match only_expr("a < b as int;") {
+        Expr::Cast { expr, ty } => {
+            assert_eq!(ty, Type::Int);
+            assert!(
+                matches!(&*expr, Expr::Bin { op: BinOp::Lt, .. }),
+                "expected the cast to wrap the comparison, got {expr:?}"
+            );
+        }
+        other => panic!("expected a cast, got {other:?}"),
+    }
+}
+
+#[test]
+fn casts_chain_left_to_right() {
+    match only_expr("x as int as number;") {
+        Expr::Cast { expr, ty } => {
+            assert_eq!(ty, Type::Number);
+            assert!(
+                matches!(&*expr, Expr::Cast { ty: Type::Int, .. }),
+                "expected the inner cast, got {expr:?}"
+            );
+        }
+        other => panic!("expected the outer cast, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_cast_is_not_an_assignment_target() {
+    let err = parse_err("x as int = 5;");
+    assert!(err.contains("invalid assignment target"), "got: {err}");
+}
+
+#[test]
+fn rejects_a_cast_to_void() {
+    let err = parse_err("x as void;");
+    assert!(err.contains("cannot cast to 'void'"), "got: {err}");
+}
+
+#[test]
+fn rejects_a_cast_to_a_non_type() {
+    let err = parse_err("x as y;");
+    assert!(err.contains("unsupported type 'y'"), "got: {err}");
+}

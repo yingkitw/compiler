@@ -23,6 +23,90 @@ fn a_recurrence_becomes_a_loop() {
 }
 
 #[test]
+fn a_number_recurrence_becomes_a_loop() {
+    // A `number` lattice is only known at run time, so the rewrite finds it
+    // by walking the argument down — but the recursion is gone all the same.
+    let prog = optimised(
+        "function f(n: number): number {\n\
+         \x20  if (n < 2) { return n; }\n\
+         \x20  return f(n - 1) + f(n - 2);\n\
+         }\n",
+    );
+    let body = first_body(&prog);
+    assert!(has_loop(body), "expected a loop: {body:?}");
+    assert_eq!(
+        calls_to(body, "f"),
+        2,
+        "only the starting values should still be calls: {body:?}"
+    );
+}
+
+#[test]
+fn a_number_recurrence_walks_the_argument_down_and_counts_back_up() {
+    // The `number` scheme has two loops: one that walks the argument down
+    // to the top base point, and one that replays that descent as a
+    // counter — replaying it is what makes the iteration count exact.
+    let prog = optimised(
+        "function f(n: number): number {\n\
+         \x20  if (n < 2) { return n; }\n\
+         \x20  return f(n - 1) + f(n - 2);\n\
+         }\n",
+    );
+    let body = first_body(&prog);
+    let loops = body
+        .iter()
+        .filter(|s| matches!(s, Stmt::While { .. }))
+        .count();
+    assert_eq!(loops, 2, "expected a descent and a counter: {body:?}");
+}
+
+#[test]
+fn an_int_recurrence_does_not_walk_the_argument_down() {
+    // The `int` lattice is known at compile time; adding a run-time walk to
+    // it would double the loop's work for nothing.
+    let prog = optimised(
+        "function f(n: int): int {\n\
+         \x20  if (n < 2) { return n; }\n\
+         \x20  return f(n - 1) + f(n - 2);\n\
+         }\n",
+    );
+    let body = first_body(&prog);
+    let loops = body
+        .iter()
+        .filter(|s| matches!(s, Stmt::While { .. }))
+        .count();
+    assert_eq!(loops, 1, "the int path should be one loop: {body:?}");
+}
+
+#[test]
+fn a_number_recurrence_that_reads_the_parameter_is_left_alone() {
+    // A term that reads the parameter must see its own level's value. The
+    // `int` loop can give it one; the `number` counter counts down from the
+    // argument and is never the level's value, so the rewrite refuses.
+    let prog = optimised(
+        "function f(n: number): number {\n\
+         \x20  if (n < 2) { return n; }\n\
+         \x20  return f(n - 1) + f(n - 2) + n;\n\
+         }\n",
+    );
+    let body = first_body(&prog);
+    assert!(!has_loop(body), "expected no rewrite: {body:?}");
+}
+
+#[test]
+fn a_number_recurrence_with_an_inclusive_base_becomes_a_loop() {
+    let prog = optimised(
+        "function f(n: number): number {\n\
+         \x20  if (n <= 2) { return 1; }\n\
+         \x20  return f(n - 1) + f(n - 2);\n\
+         }\n",
+    );
+    let body = first_body(&prog);
+    assert!(has_loop(body), "expected a loop: {body:?}");
+    assert_eq!(calls_to(body, "f"), 2);
+}
+
+#[test]
 fn a_recurrence_with_swapped_calls_becomes_a_loop() {
     let prog = optimised(
         "function f(n: int): int {\n\

@@ -6,15 +6,24 @@
 // The classic: fibonacci. As written, fib(90) would make an astronomical
 // number of calls; the rewrite makes ninety of them.
 //
-// The rewrite needs the parameter to be an `int`: the loop counts the values
-// it computes with its own index, and a fractional argument would make the
-// loop's count and the recursion's depth disagree. A `number` fibonacci is
-// left exactly as it was written.
+// An `int` parameter gives the loop a lattice it can count directly.
 function fib(n: int): int {
     if (n < 2) { return n; }
     return fib(n - 1) + fib(n - 2);
 }
 print(fib(90));   // 2880067194370816120
+
+// A `number` fibonacci is rewritten too — including fractional arguments,
+// which the `int` lattice cannot express. The loop walks the argument down
+// to the base case with the same subtractions the recursion performs, so
+// the values it keeps are the recursion's own, and a fractional argument
+// lands on the same answers the source program computes.
+function fibf(n: number): number {
+    if (n < 2) { return n; }
+    return fibf(n - 1) + fibf(n - 2);
+}
+print(fibf(2.5));    // 2
+print(fibf(30.5));   // 1505174.5
 
 // Subtraction and multiplication are rewritten the same way.
 function difference(n: int): int {

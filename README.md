@@ -69,6 +69,7 @@ let x: number = 40;
 let y = 2;                    // inferred: number
 const pi: number = 3.14159;
 let k: int = -5;              // negative int literals work
+let q = x as int + y;         // 42 — `as` is a real conversion: (x as int) + y
 
 // Functions — recursion and forward references both work.
 // A self-recursive call in tail position is turned into a loop, so a tail
@@ -125,6 +126,11 @@ The checker is strict — there are no implicit conversions.
   There is no implicit conversion between them.
 - `int` arithmetic wraps (there is no overflow check) and division by zero
   reports `error: integer division by zero or overflow` at runtime.
+- `x as int` and `x as number` convert between the numeric types — unlike
+  TypeScript's erased assertion, these are real machine conversions:
+  truncation toward zero, `NaN` → `0`, saturation outside the `i64` range
+  (Rust's `as` semantics), exact up to 2^53 the other way. `boolean` and
+  `void` casts are errors.
 - Equality (`== !=`) requires both operands to have the *same* type.
 - `&&`, `||`, and `!` accept `boolean`, `number` or `int` and always yield
   `boolean`. They **short-circuit**: in `false && (1 / 0 > 0)`, the right side

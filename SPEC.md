@@ -60,7 +60,7 @@ initializer. Annotations are mandatory for parameters.
 - **Comments**: `// line comment` and `/* block comment */` (block comments do not
   nest).
 - **Keywords**: `let`, `const`, `function`, `if`, `else`, `while`, `for`,
-  `return`, `true`, `false`.
+  `as`, `return`, `true`, `false`.
 - **Type names**: `number`, `int`, `boolean`, `void`. These are ordinary
   identifiers — `let number = 5;` is legal — and they name a type only when
   they appear in a type-annotation position.
@@ -104,7 +104,13 @@ assignment   ::= orExpr ("=" assignment)? ;   (* LHS must be a variable *)
 orExpr       ::= andExpr ("||" andExpr)* ;
 andExpr      ::= equality ("&&" equality)* ;
 equality     ::= comparison (("==" | "!=") comparison)* ;
-comparison   ::= term (("<" | "<=" | ">" | ">=") term)* ;
+comparison   ::= term (("<" | "<=" | ">" | ">=") term | "as" type castTail)* ;
+castTail     ::= (("*" | "/" | "%") unary)* (("+" | "-") factor)* ;
+               (* `as` has the precedence of the relational operators and
+                  wraps the whole expression to its left — `1 + 2 as int`
+                  is `(1 + 2) as int` — but a tighter operator may still
+                  follow the cast, so `x as int + 1` is `(x as int) + 1`;
+                  both are TypeScript's behaviour *)
 term         ::= factor (("+" | "-") factor)* ;
 factor       ::= unary (("*" | "/" | "%") unary)* ;
 unary        ::= ("!" | "-") unary | call ;
@@ -122,7 +128,7 @@ Assignment is right-associative; all binary operators are left-associative.
 **Not supported**: `++`, `--`, compound assignment, `? :`, `do`,
 `switch`, `break`, `continue`, `throw`, `try`, object literals, array literals,
 string literals, `new`, `typeof`, `instanceof`, `in`, `of`, `delete`, `void`
-operator, `as`, generics, classes, modules, arrow functions.
+operator, generics, classes, modules, arrow functions.
 
 The `%` (remainder) operator is supported for `int` and `number` operands. For
 `number` it truncates toward zero and takes the sign of the dividend, like
@@ -318,6 +324,27 @@ bit.
   every path.
 - A `void`-returning function may not return a value.
 
+### Casts
+
+`x as int` and `x as number` convert between the two numeric types. Unlike
+TypeScript's `as` — an assertion the checker verifies and then erases —
+these are real conversions, because the two types have different machine
+representations:
+
+- **`number` → `int` truncates toward zero**: `3.9 as int` is `3` and
+  `-3.9 as int` is `-3`. `NaN` becomes `0`, and a value outside the `i64`
+  range saturates at the range's ends — the same semantics as Rust's `as`.
+- **`int` → `number` is exact up to 2^53** and rounds beyond it: a double
+  cannot hold more.
+- A cast to the value's own type is a no-op.
+- `boolean` and `void` are not numeric: casting either from a numeric type,
+  casting either to a numeric type, and casting to `void` are all errors
+  (`cannot cast boolean to int`, …). The parser rejects `as void` with a
+  line number.
+
+A cast operates on *values*, unlike a literal's adaptation to its context:
+`4.5 as int` is `4`, while `let x: int = 4.5;` is an error.
+
 ### Integer literals
 
 A numeric literal has no fixed type of its own. It is a `number` by default,
@@ -354,12 +381,12 @@ cannot assign boolean to 'x: number'
 
 Errors are reported for: unknown types, type mismatches on initialization and
 assignment, arithmetic or relational type errors, comparing mismatched types,
-using a void value where a value is required, assigning to a `const`, undefined
-variables, undefined functions, wrong argument counts, wrong argument types,
-functions that don't return on all paths, nested function declarations,
-`print` of a void value, `void` used as a variable or parameter type,
-expressions nested deeper than the compiler's limit, and redefining `print` or
-`main` incorrectly.
+casting a non-numeric type, using a void value where a value is required,
+assigning to a `const`, undefined variables, undefined functions, wrong
+argument counts, wrong argument types, functions that don't return on all
+paths, nested function declarations, `print` of a void value, `void` used as
+a variable or parameter type, expressions nested deeper than the compiler's
+limit, and redefining `print` or `main` incorrectly.
 
 ## Runtime ABI
 

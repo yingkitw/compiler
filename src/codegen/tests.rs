@@ -56,6 +56,8 @@ fn no_ast_variant_panics_the_compiler() {
         ("unary not", "print(!true);"),
         ("call", "function f(): void { } f();"),
         ("nested call", "function f(): number { return 1; } print(f());"),
+        ("cast number to int", "let x = 1.5; let y: int = x as int;"),
+        ("cast int to number", "let x: int = 1; let y: number = x as number;"),
         ("main", "function main(): void { print(1); }"),
         ("top level", "print(1);"),
         ("shadowing", "let x = 1; { let x = 2; print(x); }"),
@@ -378,4 +380,60 @@ fn accepts_top_level_statements_alongside_main() {
 #[test]
 fn accepts_a_void_function_without_a_return() {
     compiles("function f(): void { }");
+}
+
+#[test]
+fn casts_number_to_int() {
+    compiles("let x = 1.5; let y: int = x as int; print(y);");
+}
+
+#[test]
+fn casts_int_to_number() {
+    compiles("let x: int = 2; let y: number = x as number; print(y);");
+}
+
+#[test]
+fn a_cast_to_the_own_type_is_a_no_op() {
+    compiles("let x = 1; print(x as number);");
+    compiles("let b = true; print(b as boolean);");
+}
+
+#[test]
+fn a_cast_feeds_a_function_argument() {
+    compiles("function f(n: int): int { return n; } let x = 1.5; print(f(x as int));");
+}
+
+#[test]
+fn rejects_casting_a_boolean() {
+    let err = type_error("print(true as int);");
+    assert!(err.contains("cannot cast boolean to int"), "got: {err}");
+    // The same error from a comparison's boolean: `(1 < 2) as int`.
+    let err = type_error("print(1 < 2 as int);");
+    assert!(err.contains("cannot cast boolean to int"), "got: {err}");
+}
+
+#[test]
+fn rejects_casting_to_boolean() {
+    let err = type_error("print(1 as boolean);");
+    assert!(err.contains("cannot cast number to boolean"), "got: {err}");
+}
+
+#[test]
+fn rejects_casting_an_int_to_boolean() {
+    let err = type_error("let x: int = 1; print(x as boolean);");
+    assert!(err.contains("cannot cast int to boolean"), "got: {err}");
+}
+
+#[test]
+fn rejects_casting_a_void_value() {
+    let err = type_error("function f(): void { } print(f() as int);");
+    assert!(err.contains("void"), "got: {err}");
+}
+
+#[test]
+fn a_cast_result_participates_in_arithmetic() {
+    // `n as int + m` must type-check as int + int, not number + int.
+    compiles("let n = 1.5; let m: int = 2; let s: int = n as int + m; print(s);");
+    let err = type_error("let n = 1.5; let m: int = 2; let s: int = n + m;");
+    assert!(err.contains("arithmetic operators"), "got: {err}");
 }

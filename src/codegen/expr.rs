@@ -76,6 +76,35 @@ impl<'a> FnGen<'a> {
                 }
             }
             Expr::Call { name, args } => self.gen_call(name, args),
+            Expr::Cast { expr, ty } => {
+                let (v, t) = self.gen_expr(expr)?;
+                let v = self.val(v, t)?;
+                // A cast to the value's own type is a no-op, like
+                // TypeScript's no-op assertion.
+                if *ty == t {
+                    return Ok((Some(v), t));
+                }
+                match (*ty, t) {
+                    // number → int: truncate toward zero; NaN becomes 0 and
+                    // an out-of-range value saturates to the end of the i64
+                    // range — Rust's `as` semantics, and unlike the trapping
+                    // `fcvt_to_sint`, defined for every input.
+                    (Type::Int, Type::Number) => {
+                        let v = self.b.ins().fcvt_to_sint_sat(types::I64, v);
+                        Ok((Some(v), Type::Int))
+                    }
+                    // int → number: exact up to 2^53, rounded beyond it —
+                    // the honest conversion, since a double cannot hold more.
+                    (Type::Number, Type::Int) => {
+                        let v = self.b.ins().fcvt_from_sint(types::F64, v);
+                        Ok((Some(v), Type::Number))
+                    }
+                    // The parser rejects `as void` with a line number; this
+                    // arm is defence in depth.
+                    (Type::Void, _) => Err("cannot cast to 'void'".to_string()),
+                    _ => Err(format!("cannot cast {} to {}", t, ty)),
+                }
+            }
         }
     }
 

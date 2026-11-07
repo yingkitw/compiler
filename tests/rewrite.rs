@@ -239,6 +239,8 @@ fn recurrence() {
     assert_eq!(
         compile_and_run("recurrence"),
         "2880067194370816120\n\
+         2\n\
+         1505174.5\n\
          -1\n\
          1\n\
          324\n"
@@ -434,6 +436,69 @@ fn a_recurrence_means_the_same_program_as_the_loop_it_replaces() {
              }\n\
              print(f(10));\n",
         ),
+        (
+            "fibonacci_number",
+            // A `number` parameter is rewritten too. The differential spells
+            // the same program with two lets, which no rewrite fires on, at
+            // a fractional argument — where the two lattices differ most.
+            "function f(n: number): number {\n\
+             \x20 if (n < 2) { return n; }\n\
+             \x20 return f(n - 1) + f(n - 2);\n\
+             }\n\
+             print(f(12.5));\n",
+            "function f(n: number): number {\n\
+             \x20 if (n < 2) { return n; }\n\
+             \x20 let a = f(n - 1);\n\
+             \x20 let b = f(n - 2);\n\
+             \x20 return a + b;\n\
+             }\n\
+             print(f(12.5));\n",
+        ),
+        (
+            "inclusive_base_case_number",
+            "function f(n: number): number {\n\
+             \x20 if (n <= 1) { return 1; }\n\
+             \x20 return f(n - 1) + f(n - 2);\n\
+             }\n\
+             print(f(12.5));\n",
+            "function f(n: number): number {\n\
+             \x20 if (n <= 1) { return 1; }\n\
+             \x20 let a = f(n - 1);\n\
+             \x20 let b = f(n - 2);\n\
+             \x20 return a + b;\n\
+             }\n\
+             print(f(12.5));\n",
+        ),
+        (
+            "a_wider_gap_number",
+            "function f(n: number): number {\n\
+             \x20 if (n < 3) { return n; }\n\
+             \x20 return f(n - 1) + f(n - 3);\n\
+             }\n\
+             print(f(12.5));\n",
+            "function f(n: number): number {\n\
+             \x20 if (n < 3) { return n; }\n\
+             \x20 let a = f(n - 1);\n\
+             \x20 let b = f(n - 3);\n\
+             \x20 return a + b;\n\
+             }\n\
+             print(f(12.5));\n",
+        ),
+        (
+            "a_second_parameter_number",
+            "function f(n: number, m: number): number {\n\
+             \x20 if (n < 2) { return m; }\n\
+             \x20 return f(n - 1, m) + f(n - 2, m);\n\
+             }\n\
+             print(f(12.5, 3));\n",
+            "function f(n: number, m: number): number {\n\
+             \x20 if (n < 2) { return m; }\n\
+             \x20 let a = f(n - 1, m);\n\
+             \x20 let b = f(n - 2, m);\n\
+             \x20 return a + b;\n\
+             }\n\
+             print(f(12.5, 3));\n",
+        ),
     ];
     for (name, recurrence, spelled_out) in cases {
         assert_eq!(
@@ -466,17 +531,28 @@ fn a_number_accumulator_is_left_alone_so_the_rounding_survives() {
 }
 
 #[test]
-fn a_recurrence_with_a_number_parameter_is_left_alone() {
-    // Regression test. The recurrence rewrite counts the values it computes
-    // with its own index; a fractional argument makes that count disagree
-    // with the recursion's depth, and f(2.5) printed 1 where the program
-    // computes 2. A `number` parameter is therefore left as written.
+fn a_number_recurrence_computes_a_fractional_argument_exactly() {
+    // Regression test. The first version of the rewrite counted its own
+    // integer index, and a fractional argument made that count disagree
+    // with the recursion's depth: f(2.5) printed 1 where the program
+    // computes 2. A `number` parameter was therefore left as written. The
+    // rewrite now derives its lattice from the argument — the descent, the
+    // starting calls and the counter all replay the recursion's own
+    // subtractions — so the rewritten program prints what the source
+    // program computes, at fractional arguments included.
     let source = "function f(n: number): number {\n\
                   \x20 if (n < 2) { return n; }\n\
                   \x20 return f(n - 1) + f(n - 2);\n\
                   }\n\
-                  print(f(2.5));\n";
-    assert_eq!(run_source("rec_float_arg", source), "2\n");
+                  print(f(2.5));\n\
+                  print(f(0.5));\n\
+                  print(f(1.9));\n";
+    assert_eq!(
+        run_source("rec_float_arg", source),
+        "2\n\
+         0.5\n\
+         1.9\n"
+    );
 }
 
 #[test]

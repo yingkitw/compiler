@@ -75,7 +75,7 @@
 //!   lattice (adding one does not undo subtracting one, in floating point),
 //!   so a `number` rewrite counts down from the argument instead — and a
 //!   term that reads the parameter has no value it could see, so such a term
-//!   refuses the rewrite,,
+//!   refuses the rewrite,
 //! * the base case is the first statement of the body, with the same rules
 //!   as the tail-call rewrite — a statement before it would run once per
 //!   recursion level in the source program and once in the rewritten one,
@@ -97,6 +97,14 @@
 //! the parameter: the recursion's level and the loop's index are not the
 //! same number, and a term that reads the parameter must see the level's
 //! own value.
+//!
+//! Both schemes change how a program that never terminates *fails*. The
+//! source program exhausts the stack and is reported; the loop keeps
+//! counting. When the descent cannot make progress — an `int` argument near
+//! `i64::MAX`, a `number` argument at or above 2^53, or an infinity — the
+//! rewritten program loops where the source program was reported as a stack
+//! overflow. Every finite argument below those bounds computes the same
+//! answer, bit for bit.
 
 use crate::ast::*;
 
@@ -112,13 +120,25 @@ const REC_ACC: &str = "__ts_rec_v";
 /// The name of the generated induction variable.
 const REC_INDEX: &str = "__ts_rec_i";
 
+/// The name of the generated base pointer — the largest argument, on the
+/// argument's own lattice, that reaches the base case. Only a `number`
+/// parameter needs one: its lattice is not known until run time.
+const REC_BASE: &str = "__ts_rec_b";
+
 /// The name of the generated value the loop computes.
 const REC_NEXT: &str = "__ts_rec_c";
 
 /// A self-recursive function whose values satisfy a recurrence.
 struct Recurrence {
-    /// The largest argument that reaches the base case.
+    /// The largest argument that reaches the base case — what an `int`
+    /// parameter's fixed lattice needs.
     threshold: i64,
+    /// The comparison the descent loop uses to find the top base point —
+    /// what a `number` parameter's run-time lattice needs. `n < L` descends
+    /// while `b >= L`; `n <= L` while `b > L`.
+    descent: BinOp,
+    /// The literal the base case compares the parameter against.
+    limit: i64,
     /// How many values the loop has to keep: the largest offset the
     /// expression calls the function at.
     width: i64,
@@ -166,47 +186,125 @@ fn rewrite_recurrence(
         return;
     };
 
-    // The starting values: f(threshold - width + 1) ... f(threshold). All of
-    // them reach the base case, so each costs one call.
-    let call_at = |value: i64| Expr::Call {
-        name: name.to_string(),
-        args: {
-            let mut args = vec![Expr::Num(NumLit::new(value as f64, Some(value)))];
-            for (pname, _) in params.iter().skip(1) {
-                args.push(Expr::Var(pname.clone()));
-            }
-            args
-        },
-    };
-
     // The base case stays exactly as it was.
     let mut out: Vec<Stmt> = vec![body[0].clone()];
 
-    // The accumulators, oldest first: the first holds the value from the
-    // longest ago, the last the most recent one.
-    for (i, acc) in accs.iter().enumerate() {
-        let value = rec.threshold - (rec.width - 1 - i as i64);
-        out.push(Stmt::Let {
-            name: acc.clone(),
-            ty: Some(ty),
-            init: Some(call_at(value)),
-            mutable: true,
-        });
+    // One step down the argument lattice — the subtraction the recursion's
+    // own call arguments perform.
+    fn one() -> Expr {
+        Expr::Num(NumLit::new(1.0, Some(1)))
     }
+    fn down(e: Expr) -> Expr {
+        Expr::Bin {
+            op: BinOp::Sub,
+            lhs: Box::new(e),
+            rhs: Box::new(one()),
+        }
+    }
+    let base = fresh_name(REC_BASE, &used);
 
-    // The induction variable counts the values still to be computed. It is
-    // not the parameter: the recursion's level and the loop's index are not
-    // the same number, and a term that reads the parameter must see the
-    // level's own value.
-    let Some(first) = rec.threshold.checked_add(1) else {
-        return;
-    };
-    out.push(Stmt::Let {
-        name: index.clone(),
-        ty: Some(params[0].1),
-        init: Some(Expr::Num(NumLit::new(first as f64, Some(first)))),
-        mutable: true,
-    });
+    // The prologue differs by parameter type: an `int` lattice is known at
+    // compile time, so the starting values are literal calls and the loop
+    // counts up from the threshold; a `number` lattice is only known at run
+    // time, so the loop walks the argument down to it first.
+    match params[0].1 {
+        Type::Int => {
+            // The starting values: f(threshold - width + 1) ... f(threshold).
+            // All of them reach the base case, so each costs one call.
+            let call_at = |value: i64| Expr::Call {
+                name: name.to_string(),
+                args: {
+                    let mut args =
+                        vec![Expr::Num(NumLit::new(value as f64, Some(value)))];
+                    for (pname, _) in params.iter().skip(1) {
+                        args.push(Expr::Var(pname.clone()));
+                    }
+                    args
+                },
+            };
+            for (i, acc) in accs.iter().enumerate() {
+                let value = rec.threshold - (rec.width - 1 - i as i64);
+                out.push(Stmt::Let {
+                    name: acc.clone(),
+                    ty: Some(ty),
+                    init: Some(call_at(value)),
+                    mutable: true,
+                });
+            }
+            let Some(first) = rec.threshold.checked_add(1) else {
+                return;
+            };
+            out.push(Stmt::Let {
+                name: index.clone(),
+                ty: Some(params[0].1),
+                init: Some(Expr::Num(NumLit::new(first as f64, Some(first)))),
+                mutable: true,
+            });
+        }
+        Type::Number => {
+            // Walk the argument down to the top base point, one step at a
+            // time: each subtraction is one the recursion performs too, so
+            // the loop and the recursion visit the same values.
+            out.push(Stmt::Let {
+                name: base.clone(),
+                ty: Some(Type::Number),
+                init: Some(Expr::Var(p0.clone())),
+                mutable: true,
+            });
+            out.push(Stmt::While {
+                cond: Expr::Bin {
+                    op: rec.descent,
+                    lhs: Box::new(Expr::Var(base.clone())),
+                    rhs: Box::new(Expr::Num(NumLit::new(
+                        rec.limit as f64,
+                        Some(rec.limit),
+                    ))),
+                },
+                body: vec![Stmt::Expr(Expr::Assign {
+                    name: base.clone(),
+                    value: Box::new(down(Expr::Var(base.clone()))),
+                })],
+            });
+
+            // The starting values, oldest first, each found by stepping
+            // down from the base point one subtraction at a time — the same
+            // steps the recursion's arguments take, so the calls land on
+            // the recursion's own values, bit for bit.
+            let call_below = |steps: usize| Expr::Call {
+                name: name.to_string(),
+                args: {
+                    let mut arg = Expr::Var(base.clone());
+                    for _ in 0..steps {
+                        arg = down(arg);
+                    }
+                    let mut args = vec![arg];
+                    for (pname, _) in params.iter().skip(1) {
+                        args.push(Expr::Var(pname.clone()));
+                    }
+                    args
+                },
+            };
+            for (i, acc) in accs.iter().enumerate() {
+                out.push(Stmt::Let {
+                    name: acc.clone(),
+                    ty: Some(ty),
+                    init: Some(call_below(width - 1 - i)),
+                    mutable: true,
+                });
+            }
+
+            // The counter replays the descent from the argument, so it
+            // reaches the base point exactly, and the loop runs exactly as
+            // many times as the recursion is deep.
+            out.push(Stmt::Let {
+                name: index.clone(),
+                ty: Some(Type::Number),
+                init: Some(Expr::Var(p0.clone())),
+                mutable: true,
+            });
+        }
+        _ => return,
+    }
 
     // The loop body: compute the next value, shift the window, count on.
     let mut loop_body = vec![Stmt::Let {
@@ -225,23 +323,44 @@ fn rewrite_recurrence(
         name: accs[width - 1].clone(),
         value: Box::new(Expr::Var(next.clone())),
     }));
-    loop_body.push(Stmt::Expr(Expr::Assign {
-        name: index.clone(),
-        value: Box::new(Expr::Bin {
-            op: BinOp::Add,
-            lhs: Box::new(Expr::Var(index.clone())),
-            rhs: Box::new(Expr::Num(NumLit::new(1.0, Some(1)))),
-        }),
-    }));
-
-    out.push(Stmt::While {
-        cond: Expr::Bin {
-            op: BinOp::Le,
-            lhs: Box::new(Expr::Var(index.clone())),
-            rhs: Box::new(Expr::Var(p0.clone())),
-        },
-        body: loop_body,
-    });
+    match params[0].1 {
+        // The `int` lattice is ascending and known: count up to the
+        // argument.
+        Type::Int => {
+            loop_body.push(Stmt::Expr(Expr::Assign {
+                name: index.clone(),
+                value: Box::new(Expr::Bin {
+                    op: BinOp::Add,
+                    lhs: Box::new(Expr::Var(index.clone())),
+                    rhs: Box::new(one()),
+                }),
+            }));
+            out.push(Stmt::While {
+                cond: Expr::Bin {
+                    op: BinOp::Le,
+                    lhs: Box::new(Expr::Var(index.clone())),
+                    rhs: Box::new(Expr::Var(p0.clone())),
+                },
+                body: loop_body,
+            });
+        }
+        // The `number` lattice belongs to the argument: the counter comes
+        // down from it and stops at the base point the descent found.
+        _ => {
+            loop_body.push(Stmt::Expr(Expr::Assign {
+                name: index.clone(),
+                value: Box::new(down(Expr::Var(index.clone()))),
+            }));
+            out.push(Stmt::While {
+                cond: Expr::Bin {
+                    op: BinOp::Gt,
+                    lhs: Box::new(Expr::Var(index.clone())),
+                    rhs: Box::new(Expr::Var(base)),
+                },
+                body: loop_body,
+            });
+        }
+    }
     out.push(Stmt::Return(Some(Expr::Var(accs[width - 1].clone()))));
 
     *body = out;
@@ -259,15 +378,21 @@ fn match_recurrence(
         Some(Type::Number) | Some(Type::Int) => {}
         _ => return None,
     }
-    // The parameter the recurrence counts down has to be an *integer*. The
-    // loop counts the values it computes with its own index, and a
-    // fractional argument would make the loop's count and the recursion's
-    // depth disagree: the recursion descends by whole offsets and reaches
-    // `2.5 - 1 = 1.5`, while the loop counts integers.
-    match params.first().map(|(_, t)| *t) {
-        Some(Type::Int) => {}
+    // The parameter the recurrence counts down has to be an `int`, or a
+    // `number` the expression does not read outside the self-calls. An
+    // `int` loop counts a fixed lattice of values, so a fractional argument
+    // would make the loop's count and the recursion's depth disagree: the
+    // recursion descends by whole offsets and reaches `2.5 - 1 = 1.5`, while
+    // the loop counts integers. A `number` loop avoids that by deriving the
+    // lattice from the argument at run time — but an upward index cannot
+    // reproduce it (adding one does not undo subtracting one, in floating
+    // point), so a term that reads the parameter would see a value that is
+    // not its level's, and such a term refuses the rewrite instead.
+    let forbid_param_reads = match params.first().map(|(_, t)| *t) {
+        Some(Type::Int) => false,
+        Some(Type::Number) => true,
         _ => return None,
-    }
+    };
     if params.is_empty() || body.len() < 2 {
         return None;
     }
@@ -303,28 +428,42 @@ fn match_recurrence(
     // The expression must call the function, at constant offsets, and
     // everything else in it must be free of side effects.
     let mut offsets = Vec::new();
-    if !collect_offsets(tail, name, params, &mut offsets, 0) {
+    if !collect_offsets(tail, name, params, &mut offsets, 0, forbid_param_reads) {
         return None;
     }
     let width = *offsets.iter().max()?;
 
-    let threshold = base_threshold(cond, &params[0].0)?;
+    let (op, limit) = base_comparison(cond, &params[0].0)?;
+    // The threshold is the `int` lattice's top base point; the descent
+    // comparison is its run-time counterpart. `n < L` reaches the base case
+    // below `L`, so the descent stops when it is no longer `>= L`; `n <= L`
+    // reaches it at `L`, so it stops when it is no longer `> L`.
+    let (threshold, descent) = match op {
+        BinOp::Lt => (limit.checked_sub(1)?, BinOp::Ge),
+        BinOp::Le => (limit, BinOp::Gt),
+        _ => return None,
+    };
 
     Some(Recurrence {
         threshold,
+        descent,
+        limit,
         width,
         tail: tail.clone(),
     })
 }
 
 /// Collect the offsets the expression calls the function at, and check that
-/// everything else in it is free of side effects.
+/// everything else in it is free of side effects. When `forbid_param_reads`
+/// is set, a read of the first parameter outside a self-call's offset also
+/// refuses — the `number` scheme has no value such a term could see.
 fn collect_offsets(
     expr: &Expr,
     name: &str,
     params: &[(String, Type)],
     offsets: &mut Vec<i64>,
     depth: usize,
+    forbid_param_reads: bool,
 ) -> bool {
     if depth > MAX_AST_DEPTH {
         // Too deep to look at: leave the program alone.
@@ -344,12 +483,19 @@ fn collect_offsets(
         // A call to another function has side effects the rewrite would
         // reorder, so it is not accepted.
         Expr::Call { .. } => false,
-        Expr::Num(_) | Expr::Bool(_) | Expr::Var(_) => true,
+        Expr::Num(_) | Expr::Bool(_) => true,
+        Expr::Var(v) => !(forbid_param_reads && *v == params[0].0),
         Expr::Bin { lhs, rhs, .. } => {
-            collect_offsets(lhs, name, params, offsets, depth + 1)
-                && collect_offsets(rhs, name, params, offsets, depth + 1)
+            collect_offsets(lhs, name, params, offsets, depth + 1, forbid_param_reads)
+                && collect_offsets(rhs, name, params, offsets, depth + 1, forbid_param_reads)
         }
-        Expr::Un { expr, .. } => collect_offsets(expr, name, params, offsets, depth + 1),
+        Expr::Un { expr, .. } => {
+            collect_offsets(expr, name, params, offsets, depth + 1, forbid_param_reads)
+        }
+        // A cast is a pure conversion of its operand.
+        Expr::Cast { expr, .. } => {
+            collect_offsets(expr, name, params, offsets, depth + 1, forbid_param_reads)
+        }
         // An assignment has a side effect.
         Expr::Assign { .. } => false,
     }
@@ -406,6 +552,14 @@ fn build_loop_expr(
                 expr: Box::new(e),
             })
         }
+        // A cast of a self-call casts the accumulator that replaces it.
+        Expr::Cast { expr, ty } => {
+            let e = build_loop_expr(expr, name, params, accs, index, param, depth + 1)?;
+            Some(Expr::Cast {
+                expr: Box::new(e),
+                ty: *ty,
+            })
+        }
         Expr::Call { .. } | Expr::Assign { .. } => None,
     }
 }
@@ -450,9 +604,9 @@ fn call_offset(args: &[Expr], params: &[(String, Type)]) -> Option<i64> {
     Some(offset)
 }
 
-/// The largest argument that reaches the base case, from a condition that
-/// compares the parameter against a literal.
-fn base_threshold(cond: &Expr, param: &str) -> Option<i64> {
+/// The base case's comparison against the parameter: its operator (which
+/// must be `<` or `<=`) and the exact integer it compares against.
+fn base_comparison(cond: &Expr, param: &str) -> Option<(BinOp, i64)> {
     let Expr::Bin { op, lhs, rhs } = cond else {
         return None;
     };
@@ -461,18 +615,14 @@ fn base_threshold(cond: &Expr, param: &str) -> Option<i64> {
         (false, true) => (*op, lhs),
         _ => return None,
     };
+    if !matches!(op, BinOp::Lt | BinOp::Le) {
+        return None;
+    }
     let Expr::Num(lit) = &**literal else {
         return None;
     };
     // The comparison must be against an exact integer.
-    let value = lit.int?;
-    match op {
-        // `n < value` reaches the base case up to `value - 1`.
-        BinOp::Lt => value.checked_sub(1),
-        // `n <= value` reaches it up to `value`.
-        BinOp::Le => Some(value),
-        _ => None,
-    }
+    Some((op, lit.int?))
 }
 
 #[cfg(test)]

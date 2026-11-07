@@ -50,6 +50,18 @@
       The `for (const x of arr)` form waits for arrays. `break`/`continue`
       do not exist yet; when they do, a `continue` in a `for` body must run
       the step, which the desugar has to be taught about
+- [x] **Explicit `int`/`number` conversion with `as`** — `x as int` and
+      `x as number` are real conversions, not TypeScript's erased assertion:
+      `number` → `int` truncates toward zero, `NaN` becomes 0, out-of-range
+      saturates (Rust's `as` semantics, via `fcvt_to_sint_sat`); `int` →
+      `number` is exact up to 2^53. `boolean` and `void` casts are errors.
+      The precedence is TypeScript's — `as` wraps the whole expression to
+      its left at the relational level, and a tighter operator may follow
+      (`x as int + 1` is `(x as int) + 1`) — which took a `tight_tail` in
+      `comparison` after a first cut bound the cast too tightly. The new
+      `Expr::Cast` variant wired into the codegen and every rewrite walker;
+      a first cut's precedence bug was caught by an AST-shape unit test
+      before it shipped
 - [x] **Measured what the `int` type is worth** (`scripts/bench_int.py`,
       interleaved rounds, min-of-N): **1.20x** on arithmetic-only code, **2.44x**
       on a function call per iteration, and **0.83x** — a small loss — on
@@ -135,7 +147,7 @@
 - [x] **PIC** — `is_pic` enabled so external calls link on macOS arm64
 - [x] **Examples** — `hello.ts`, `fib.ts`, `control.ts`, `main.ts`, `numbers.ts`,
       `integers.ts`, `remainder.ts`, `tail_call.ts`, `recurrence.ts`,
-      `stack_overflow.ts`, `for_loop.ts`
+      `stack_overflow.ts`, `for_loop.ts`, `cast.ts`
 - [x] **Doc-sync enforcement** — `tests/docs_sync.rs` checks the AGENTS.md module
       tree, ARCHITECTURE.md mentions, TODO.md test counts, and README doc links
 - [x] **Profiled the recursion gap to scriptc — it is algorithmic, not codegen**
@@ -155,16 +167,16 @@
       lines. The split was a *move*, verified by the test suite — the object
       files it produces are byte-for-byte identical to the ones the single
       files produced
-- [x] **121 inline unit tests + 45 integration tests** — all passing; `cargo clippy
+- [x] **144 inline unit tests + 47 integration tests** — all passing; `cargo clippy
       --all-targets` exits 0; doc-sync enforced by `tests/docs_sync.rs`
-- [x] **Inline unit tests for the lexer, parser, and type rules** — 12 lexer tests
+- [x] **Inline unit tests for the lexer, parser, and type rules** — 13 lexer tests
       (token kinds, comments, line tracking, exact integer literals, lex errors),
-      27 parser tests (precedence, associativity, statement forms including
-      `for`, parse errors), 47 codegen tests (every type rule in `FnGen`, the
-      `int` type, the runtime entry points, plus acceptance cases for scoping,
-      shadowing, recursion, and forward references), and 35 rewrite tests
-      (every shape the tail-call and recurrence rewrites accept, and every
-      shape they must refuse)
+      35 parser tests (precedence, associativity, statement forms including
+      `for` and `as` casts, parse errors), 56 codegen tests (every type rule in
+      `FnGen`, the `int` type, the cast rules, the runtime entry points, plus
+      acceptance cases for scoping, shadowing, recursion, and forward
+      references), and 40 rewrite tests (every shape the tail-call and
+      recurrence rewrites accept, and every shape they must refuse)
 - [x] **Sanitizer, ABI and fuzz gates** — `tests/sanitize.rs` compiles every
       example with the address and undefined-behaviour sanitizers and runs it
       (skipping itself when the sanitizers are unavailable);
@@ -257,8 +269,6 @@
 - [ ] **`for (const x of arr)`** — needs arrays first (the C-style `for` is
       done); a `for-of` desugars into an index loop over `arr[i]`, which needs
       `arr.length` and bounds-checked indexing
-- [ ] **Explicit `int`/`number` conversion** — `x as int` would let a program
-      narrow deliberately instead of relying on literal adaptation
 
 ### Medium priority
 - [ ] **Decide the binary name** — `cargo install compiler` currently installs a

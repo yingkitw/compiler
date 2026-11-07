@@ -39,6 +39,21 @@ fn for_loop() {
     );
 }
 
+#[test]
+fn cast() {
+    // Every figure in the example is derived from the cast's documented
+    // semantics: truncation toward zero, saturation, NaN → 0.
+    assert_eq!(
+        compile_and_run("cast"),
+        "3\n-3\n3\n9007199254740993\n9007199254740992\n0\n9223372036854775807\n-9223372036854775808\n7\n3\n9\n"
+    );
+}
+
+#[test]
+fn rejects_a_cast_of_a_boolean_end_to_end() {
+    compile_fails("print(true as int);", "cannot cast boolean to int");
+}
+
 /// The desugared `for` must mean the same thing as the `while` it becomes.
 /// Differential, like the rewrite tests: compile both, assert the same.
 #[test]

@@ -74,6 +74,11 @@ pub enum Expr {
     Assign { name: String, value: Box<Expr> },
     Bin { op: BinOp, lhs: Box<Expr>, rhs: Box<Expr> },
     Un { op: UnOp, expr: Box<Expr> },
+    /// An explicit conversion: `expr as ty`. Numeric types only — the cast
+    /// performs a real machine conversion (`number` ↔ `int`), not
+    /// TypeScript's erased assertion, because the two types have different
+    /// representations.
+    Cast { expr: Box<Expr>, ty: Type },
     Call { name: String, args: Vec<Expr> },
 }
 

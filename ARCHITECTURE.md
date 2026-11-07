@@ -92,7 +92,10 @@ over about 450 lines:
   `for_stmt`, `return_stmt`, `block`, expression statements); `expr.rs` one
   method per precedence level (`logic_or`, `logic_and`, `equality`,
   `comparison`, `term`, `factor`, `unary`, `call`, `primary`), plus
-  `assignment` at the top.
+  `assignment` at the top. `comparison` also handles `as` casts — their
+  precedence is relational, wrapping the whole expression to the left — and
+  its `tight_tail` continues the tighter operators after a cast, so
+  `x as int + 1` is `(x as int) + 1`.
 - The parser performs only *syntactic* checks plus three well-formedness rules:
   a `let` needs a type or an initializer, a variable or parameter cannot have
   type `void`, and an expression or statement may not nest deeper than
@@ -441,6 +444,21 @@ the checker, so nothing is silently widened or narrowed.
 `number`/`int` boundary in a program is a compile error the programmer has to
 resolve. Integer arithmetic wraps — there is no overflow check — and integer
 division by zero is a runtime error reported by the runtime's signal handler.
+
+### Casts are real conversions, and saturating ones
+**Decision**: `x as int` and `x as number` emit real conversion instructions
+(`fcvt_to_sint_sat` / `fcvt_from_sint`), and the awkward inputs are *defined*:
+`NaN` casts to `0`, and an out-of-range `number` saturates to the ends of the
+`i64` range — Rust's `as` semantics.
+**Why**: TypeScript's `as` is erased at compile time because its types share
+one representation; ours are `f64` and `i64`, so the conversion must run.
+The saturating instruction is chosen over the trapping `fcvt_to_sint` because
+a trap would surface through the runtime's signal handler as "integer
+division by zero or overflow" — a lie about what the program did.
+**Trade-off**: a trap would flag more suspicious programs, but saturation is
+defined, testable, and the semantics a Rust user already expects. A cast is
+also *value* semantics, deliberately distinct from a literal's adaptation:
+`4.5 as int` is `4`, where `let x: int = 4.5;` is an error.
 
 ### `&&` and `||` are implemented with basic blocks
 **Decision**: short-circuit evaluation uses three blocks and a dedicated SSA
