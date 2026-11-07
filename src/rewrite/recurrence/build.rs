@@ -24,14 +24,28 @@ pub(super) fn rewrite_recurrence(
 
     let used = names_in_use(params, body);
     let width = rec.width as usize;
-    let accs = fresh_numbered(REC_ACC, width, &used);
+    // The stride: the largest number every offset the expression uses is a
+    // multiple of. A stride of one is the plain lattice — one value per
+    // argument. A stride of two or more means the arguments the recursion
+    // reaches lie on one lattice (the ones congruent to the initial
+    // argument), so the loop can step by the stride and keep one
+    // accumulator per lattice position instead of one per argument.
+    let stride = rec.stride as usize;
+    let count = width / stride;
+    let accs = fresh_numbered(REC_ACC, count, &used);
     let index = fresh_name(REC_INDEX, &used);
     let next = fresh_name(REC_NEXT, &used);
     let p0 = &params[0].0;
 
     // The loop's update: the source expression with every self-call
     // replaced by the accumulator that holds that value.
-    let Some(update) = build_loop_expr(&rec.tail, name, params, &accs, &index, p0, 0) else {
+    let slots = Slots {
+        accs: &accs,
+        index: &index,
+        param: p0,
+        stride,
+    };
+    let Some(update) = build_loop_expr(&rec.tail, name, params, &slots, 0) else {
         return;
     };
 
@@ -50,6 +64,11 @@ pub(super) fn rewrite_recurrence(
             rhs: Box::new(one()),
         }
     }
+    // One lattice step — the stride, when the lattice is wider than one
+    // argument.
+    fn by(n: i64) -> Expr {
+        Expr::Num(NumLit::new(n as f64, Some(n)))
+    }
     let base = fresh_name(REC_BASE, &used);
 
     // The prologue differs by parameter type: an `int` lattice is known at
@@ -58,8 +77,9 @@ pub(super) fn rewrite_recurrence(
     // time, so the loop walks the argument down to it first.
     match params[0].1 {
         Type::Int => {
-            // The starting values: f(threshold - width + 1) ... f(threshold).
-            // All of them reach the base case, so each costs one call.
+            // The starting values: the lattice values just below the first
+            // one the loop computes. All of them reach the base case, so
+            // each costs one call.
             let call_at = |value: i64| Expr::Call {
                 name: name.to_string(),
                 args: {
@@ -71,22 +91,74 @@ pub(super) fn rewrite_recurrence(
                     args
                 },
             };
-            for (i, acc) in accs.iter().enumerate() {
-                let value = rec.threshold - (rec.width - 1 - i as i64);
-                out.push(Stmt::Let {
-                    name: acc.clone(),
-                    ty: Some(ty),
-                    init: Some(call_at(value)),
-                    mutable: true,
-                });
-            }
+            // The same call, with the argument as an expression — a wider
+            // lattice's first value is only known at run time.
+            let call_at_expr = |value: &Expr, back: usize| Expr::Call {
+                name: name.to_string(),
+                args: {
+                    let mut args = vec![Expr::Bin {
+                        op: BinOp::Sub,
+                        lhs: Box::new(value.clone()),
+                        rhs: Box::new(Expr::Num(NumLit::new(
+                            back as f64,
+                            Some(back as i64),
+                        ))),
+                    }];
+                    for (pname, _) in params.iter().skip(1) {
+                        args.push(Expr::Var(pname.clone()));
+                    }
+                    args
+                },
+            };
             let Some(first) = rec.threshold.checked_add(1) else {
                 return;
             };
+            // The first value the loop computes: the smallest argument
+            // above the threshold that lies on the lattice. On a plain
+            // lattice that is the threshold plus one, known at compile
+            // time; on a wider one it is the first argument congruent to
+            // the argument itself, which is only known at run time.
+            let first_value = Expr::Num(NumLit::new(first as f64, Some(first)));
+            let first_expr = if stride == 1 {
+                first_value.clone()
+            } else {
+                Expr::Bin {
+                    op: BinOp::Add,
+                    lhs: Box::new(first_value.clone()),
+                    rhs: Box::new(Expr::Bin {
+                        op: BinOp::Rem,
+                        lhs: Box::new(Expr::Bin {
+                            op: BinOp::Sub,
+                            lhs: Box::new(Expr::Var(p0.clone())),
+                            rhs: Box::new(first_value.clone()),
+                        }),
+                        rhs: Box::new(Expr::Num(NumLit::new(
+                            stride as f64,
+                            Some(stride as i64),
+                        ))),
+                    }),
+                }
+            };
+            for (i, acc) in accs.iter().enumerate() {
+                // How far below the first value this accumulator's is.
+                let back = (count - i) * stride;
+                let init = if stride == 1 {
+                    let value = rec.threshold - (rec.width - 1 - i as i64);
+                    call_at(value)
+                } else {
+                    call_at_expr(&first_expr, back)
+                };
+                out.push(Stmt::Let {
+                    name: acc.clone(),
+                    ty: Some(ty),
+                    init: Some(init),
+                    mutable: true,
+                });
+            }
             out.push(Stmt::Let {
                 name: index.clone(),
                 ty: Some(params[0].1),
-                init: Some(Expr::Num(NumLit::new(first as f64, Some(first)))),
+                init: Some(first_expr),
                 mutable: true,
             });
         }
@@ -111,7 +183,17 @@ pub(super) fn rewrite_recurrence(
                 },
                 body: vec![Stmt::Expr(Expr::Assign {
                     name: base.clone(),
-                    value: Box::new(down(Expr::Var(base.clone()))),
+                    value: Box::new(if stride == 1 {
+                        down(Expr::Var(base.clone()))
+                    } else {
+                        // A wider lattice steps by the stride, so the base
+                        // point stays on the lattice the argument is on.
+                        Expr::Bin {
+                            op: BinOp::Sub,
+                            lhs: Box::new(Expr::Var(base.clone())),
+                            rhs: Box::new(by(stride as i64)),
+                        }
+                    }),
                 })],
             });
 
@@ -137,7 +219,7 @@ pub(super) fn rewrite_recurrence(
                 out.push(Stmt::Let {
                     name: acc.clone(),
                     ty: Some(ty),
-                    init: Some(call_below(width - 1 - i)),
+                    init: Some(call_below((count - 1 - i) * stride)),
                     mutable: true,
                 });
             }
@@ -162,14 +244,14 @@ pub(super) fn rewrite_recurrence(
         init: Some(update),
         mutable: true,
     }];
-    for i in 0..width.saturating_sub(1) {
+    for i in 0..count.saturating_sub(1) {
         loop_body.push(Stmt::Expr(Expr::Assign {
             name: accs[i].clone(),
             value: Box::new(Expr::Var(accs[i + 1].clone())),
         }));
     }
     loop_body.push(Stmt::Expr(Expr::Assign {
-        name: accs[width - 1].clone(),
+        name: accs[count - 1].clone(),
         value: Box::new(Expr::Var(next.clone())),
     }));
     match params[0].1 {
@@ -181,7 +263,11 @@ pub(super) fn rewrite_recurrence(
                 value: Box::new(Expr::Bin {
                     op: BinOp::Add,
                     lhs: Box::new(Expr::Var(index.clone())),
-                    rhs: Box::new(one()),
+                    rhs: Box::new(if stride == 1 {
+                        one()
+                    } else {
+                        by(stride as i64)
+                    }),
                 }),
             }));
             out.push(Stmt::While {
@@ -198,7 +284,15 @@ pub(super) fn rewrite_recurrence(
         _ => {
             loop_body.push(Stmt::Expr(Expr::Assign {
                 name: index.clone(),
-                value: Box::new(down(Expr::Var(index.clone()))),
+                value: Box::new(if stride == 1 {
+                    down(Expr::Var(index.clone()))
+                } else {
+                    Expr::Bin {
+                        op: BinOp::Sub,
+                        lhs: Box::new(Expr::Var(index.clone())),
+                        rhs: Box::new(by(stride as i64)),
+                    }
+                }),
             }));
             out.push(Stmt::While {
                 cond: Expr::Bin {
@@ -210,9 +304,19 @@ pub(super) fn rewrite_recurrence(
             });
         }
     }
-    out.push(Stmt::Return(Some(Expr::Var(accs[width - 1].clone()))));
+    out.push(Stmt::Return(Some(Expr::Var(accs[count - 1].clone()))));
 
     *body = out;
+}
+
+/// What the loop-expression builder needs to know: where the accumulators
+/// are, which name carries the induction variable, and how wide the lattice
+/// is.
+struct Slots<'a> {
+    accs: &'a [String],
+    index: &'a str,
+    param: &'a str,
+    stride: usize,
 }
 
 /// Build the expression the loop computes: the source expression with every
@@ -223,9 +327,7 @@ fn build_loop_expr(
     expr: &Expr,
     name: &str,
     params: &[(String, Type)],
-    accs: &[String],
-    index: &str,
-    param: &str,
+    slots: &Slots,
     depth: usize,
 ) -> Option<Expr> {
     if depth > MAX_AST_DEPTH {
@@ -238,21 +340,22 @@ fn build_loop_expr(
         } if callee == name => {
             let offset = call_offset(args, params)?;
             // The value from `offset` steps back is the one the
-            // accumulator holds.
-            let slot = accs.len().checked_sub(offset as usize)?;
-            Some(Expr::Var(accs.get(slot)?.clone()))
+            // accumulator holds. On a wider lattice the offset counts
+            // lattice positions, not arguments.
+            let slot = slots.accs.len().checked_sub((offset as usize) / slots.stride)?;
+            Some(Expr::Var(slots.accs.get(slot)?.clone()))
         }
         Expr::Num(_) | Expr::Bool(_) => Some(expr.clone()),
         Expr::Var(v) => {
-            if v == param {
-                Some(Expr::Var(index.to_string()))
+            if v == slots.param {
+                Some(Expr::Var(slots.index.to_string()))
             } else {
                 Some(expr.clone())
             }
         }
         Expr::Bin { op, lhs, rhs } => {
-            let lhs = build_loop_expr(lhs, name, params, accs, index, param, depth + 1)?;
-            let rhs = build_loop_expr(rhs, name, params, accs, index, param, depth + 1)?;
+            let lhs = build_loop_expr(lhs, name, params, slots, depth + 1)?;
+            let rhs = build_loop_expr(rhs, name, params, slots, depth + 1)?;
             Some(Expr::Bin {
                 op: *op,
                 lhs: Box::new(lhs),
@@ -260,7 +363,7 @@ fn build_loop_expr(
             })
         }
         Expr::Un { op, expr } => {
-            let e = build_loop_expr(expr, name, params, accs, index, param, depth + 1)?;
+            let e = build_loop_expr(expr, name, params, slots, depth + 1)?;
             Some(Expr::Un {
                 op: *op,
                 expr: Box::new(e),
@@ -268,7 +371,7 @@ fn build_loop_expr(
         }
         // A cast of a self-call casts the accumulator that replaces it.
         Expr::Cast { expr, ty } => {
-            let e = build_loop_expr(expr, name, params, accs, index, param, depth + 1)?;
+            let e = build_loop_expr(expr, name, params, slots, depth + 1)?;
             Some(Expr::Cast {
                 expr: Box::new(e),
                 ty: *ty,

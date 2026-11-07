@@ -310,6 +310,15 @@ term (`f(n - 1) + f(n - 2) + 1`) or a coefficient (`2 * f(n - 1)`). The
 expression's shape is preserved exactly, so the answer is the same, bit for
 bit.
 
+When every offset the expression uses is a multiple of the same number — the
+*stride* — the arguments the recursion reaches lie on one lattice (the ones
+congruent to the initial argument), and the loop steps by the stride and
+keeps one value per lattice position instead of one per argument:
+`f(n - 2) + f(n - 4)` steps by 2 and keeps two values, not four. The first
+value on the lattice is the first argument above the base point that is
+congruent to the argument itself, which is only known at run time. The
+values computed do not change.
+
 ### Type rules
 
 - Arithmetic (`+`, `-`, `*`, `/`) requires both operands to have the *same*

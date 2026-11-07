@@ -339,3 +339,76 @@ fn a_recursion_can_be_deeper_than_the_stack_once_it_becomes_a_loop() {
                   print(f(90));\n";
     assert_eq!(run_source("rec_deep", source), "2880067194370816120\n");
 }
+
+#[test]
+fn a_recurrence_on_a_wider_lattice_means_the_same_program() {
+    // When every offset the expression uses is a multiple of the same
+    // number, the arguments the recursion reaches lie on one lattice — so
+    // the loop steps by that number and keeps one accumulator per lattice
+    // position instead of one per argument. The values it computes must
+    // not change, so each case is compiled twice: once with the
+    // recurrence, and once as the same program written so that no rewrite
+    // can fire on it.
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            "even_offsets",
+            "function f(n: int): int {\n\
+             \x20 if (n < 2) { return n; }\n\
+             \x20 return f(n - 2) + f(n - 4);\n\
+             }\n\
+             print(f(20));\n\
+             print(f(2));\n\
+             print(f(3));\n",
+            "function f(n: int): int {\n\
+             \x20 if (n < 2) { return n; }\n\
+             \x20 let a = f(n - 2);\n\
+             \x20 let b = f(n - 4);\n\
+             \x20 return a + b;\n\
+             }\n\
+             print(f(20));\n\
+             print(f(2));\n\
+             print(f(3));\n",
+        ),
+        (
+            "even_offsets_number",
+            "function f(n: number): number {\n\
+             \x20 if (n < 2) { return n; }\n\
+             \x20 return f(n - 2) + f(n - 4);\n\
+             }\n\
+             print(f(20));\n\
+             print(f(20.5));\n\
+             print(f(2.5));\n",
+            "function f(n: number): number {\n\
+             \x20 if (n < 2) { return n; }\n\
+             \x20 let a = f(n - 2);\n\
+             \x20 let b = f(n - 4);\n\
+             \x20 return a + b;\n\
+             }\n\
+             print(f(20));\n\
+             print(f(20.5));\n\
+             print(f(2.5));\n",
+        ),
+        (
+            "stride_three",
+            "function f(n: int): int {\n\
+             \x20 if (n < 3) { return n; }\n\
+             \x20 return f(n - 3) + f(n - 6);\n\
+             }\n\
+             print(f(21));\n",
+            "function f(n: int): int {\n\
+             \x20 if (n < 3) { return n; }\n\
+             \x20 let a = f(n - 3);\n\
+             \x20 let b = f(n - 6);\n\
+             \x20 return a + b;\n\
+             }\n\
+             print(f(21));\n",
+        ),
+    ];
+    for (name, recurrence, reference) in cases {
+        assert_eq!(
+            run_source(&format!("lattice_{name}_recurrence"), recurrence),
+            run_source(&format!("lattice_{name}_reference"), reference),
+            "the {name} case: the rewritten program must print what the recursion prints"
+        );
+    }
+}

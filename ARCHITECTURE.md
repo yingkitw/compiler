@@ -156,8 +156,14 @@ over about 450 lines:
   constant stack space. The expression's shape is preserved exactly, so a
   recurrence with a third term, a coefficient or a wider gap is rewritten
   the same way.
-- **The recurrence rewrite works for a `number` parameter too — by replaying
-  the descent.** An `int` loop counts a fixed lattice with its own index, but
+- **The recurrence rewrite keeps the narrowest window the shape allows.** The
+  loop needs the values the expression reads, and the widest offset says how
+  far back it must reach. When every offset is a multiple of the same number
+  — the *stride* — the arguments the recursion reaches lie on one lattice,
+  so the loop steps by the stride and keeps one value per lattice position:
+  `f(n - 2) + f(n - 4)` steps by 2 and keeps two values, not four. The
+  first value on the lattice is only known at run time, so the `int` scheme
+  computes it and the `number` scheme finds it by walking down the lattice. An `int` loop counts a fixed lattice with its own index, but
   a `number` argument's lattice is not known until run time: the recursion's
   arguments are `n`, `n − 1`, `n − 2`, … at whatever fraction `n` carries.
   The rewrite therefore walks the argument down to the base case first, with

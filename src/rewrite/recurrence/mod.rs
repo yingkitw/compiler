@@ -142,6 +142,11 @@ struct Recurrence {
     /// How many values the loop has to keep: the largest offset the
     /// expression calls the function at.
     width: i64,
+    /// The largest number every offset is a multiple of. When it is greater
+    /// than one, the arguments the recursion reaches lie on one lattice, so
+    /// the loop can step by the stride and keep one accumulator per lattice
+    /// position instead of one per argument.
+    stride: i64,
     /// The expression that computes the next value.
     tail: Expr,
 }

@@ -23,6 +23,46 @@ fn a_recurrence_becomes_a_loop() {
 }
 
 #[test]
+fn a_recurrence_on_a_wider_lattice_keeps_a_narrower_window() {
+    // The offsets 2 and 4 are both multiples of 2, so the arguments the
+    // recursion reaches lie on one lattice — the loop steps by 2 and keeps
+    // one accumulator per lattice position: two of them, not four.
+    let prog = optimised(
+        "function f(n: int): int {\n\
+         \x20  if (n < 2) { return n; }\n\
+         \x20  return f(n - 2) + f(n - 4);\n\
+         }\n",
+    );
+    let body = first_body(&prog);
+    assert!(has_loop(body), "expected a loop: {body:?}");
+    assert_eq!(
+        calls_to(body, "f"),
+        2,
+        "the window should be two lattice positions, not four: {body:?}"
+    );
+}
+
+#[test]
+fn a_recurrence_with_coprime_offsets_keeps_every_value() {
+    // The offsets 1 and 17 share no divisor, so the arguments the
+    // recursion reaches lie on no narrower lattice: the loop keeps one
+    // accumulator per argument in the range — seventeen of them.
+    let prog = optimised(
+        "function f(n: int): int {\n\
+         \x20  if (n < 2) { return n; }\n\
+         \x20  return f(n - 1) + f(n - 17);\n\
+         }\n",
+    );
+    let body = first_body(&prog);
+    assert!(has_loop(body), "expected a loop: {body:?}");
+    assert_eq!(
+        calls_to(body, "f"),
+        17,
+        "every value in the range has to be kept: {body:?}"
+    );
+}
+
+#[test]
 fn a_number_recurrence_becomes_a_loop() {
     // A `number` lattice is only known at run time, so the rewrite finds it
     // by walking the argument down — but the recursion is gone all the same.

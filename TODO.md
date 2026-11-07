@@ -62,6 +62,28 @@
       `Expr::Cast` variant wired into the codegen and every rewrite walker;
       a first cut's precedence bug was caught by an AST-shape unit test
       before it shipped
+- [x] **A recurrence on a wider lattice keeps a narrower window** — the item
+      this replaces said the loop could "hop backwards over the offsets" and
+      keep two values for `f(n - 1) + f(n - 17)`. **That premise was wrong**:
+      the offsets 1 and 17 share no divisor, so the arguments the recursion
+      reaches lie on no narrower lattice, and that shape is already optimal
+      — the loop's seventeen values are all of them, and no refinement
+      exists for it.
+      The rule that does hold is the **stride**: the largest number every
+      offset is a multiple of. When it is greater than one, the arguments
+      lie on one lattice (the ones congruent to the initial argument), so
+      the loop steps by the stride and keeps one accumulator per lattice
+      position instead of one per argument — `f(n - 2) + f(n - 4)` steps by 2
+      and keeps two accumulators, not four.
+      The first value on the lattice is only known at run time — it is the
+      first argument above the base point that is congruent to the argument
+      itself — so the `int` scheme computes it (`threshold + 1 + (n -
+      threshold - 1) % stride`) and the `number` scheme finds it by walking
+      down the lattice. The values do not change: the differential tests
+      compile each shape twice, and every program whose offsets share no
+      divisor compiles to a byte-identical object file.
+      Evidence and method: MEMORY.md → *Replaying the Descent* and *The Stride
+      Is the GCD, Not the Difference*.
 - [x] **No file exceeds ~450 lines** — the audit convention (AGENTS.md Step
       6a) is now checked by hand and by the scorecard, and the two files
       that had crossed the line are split:
@@ -181,12 +203,12 @@
       lines. The split was a *move*, verified by the test suite — the object
       files it produces are byte-for-byte identical to the ones the single
       files produced
-- [x] **144 inline unit tests + 47 integration tests** — all passing; `cargo clippy
+- [x] **146 inline unit tests + 48 integration tests** — all passing; `cargo clippy
       --all-targets` exits 0; doc-sync enforced by `tests/docs_sync.rs`
 - [x] **Inline unit tests for the lexer, parser, and type rules** — 13 lexer tests
       (token kinds, comments, line tracking, exact integer literals, lex errors),
       35 parser tests (precedence, associativity, statement forms including
-      `for` and `as` casts, parse errors), 56 codegen tests (every type rule in
+      `for` and `as` casts, parse errors), 58 codegen tests (every type rule in
       `FnGen`, the `int` type, the cast rules, the runtime entry points, plus
       acceptance cases for scoping, shadowing, recursion, and forward
       references), and 40 rewrite tests (every shape the tail-call and
@@ -263,16 +285,6 @@
 ## Next
 
 ### High priority
-- [ ] **Hop backwards over the offsets.** The rewrite now keeps one value per
-      offset the recurrence uses, so `f(n - 1) + f(n - 17)` keeps seventeen
-      values and computes every one of them. The literature's refinement
-      computes only the values that are actually needed: the differences
-      between the offsets (here 16) are the spacing of the values that
-      matter, so the loop can step by 16 and keep two. It is the difference
-      between an O(n) loop with 17 accumulators and one with 2 — worth doing
-      for the sparse recurrences it applies to, and not much else.
-      Evidence and method: MEMORY.md → *The Chain Shape Is Where the Rewrite
-      Shows Itself*; `scripts/bench_shape.py`.
 - [ ] **Strings** — add a `string` type (UTF-8 bytes + length, not a Rust
       `String`), string literals in the lexer, `+` concatenation, `print`
       support, comparison operators. Needs a GC or arena decision first — see

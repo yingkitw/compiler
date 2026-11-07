@@ -75,6 +75,16 @@ pub(super) fn match_recurrence(
         return None;
     }
     let width = *offsets.iter().max()?;
+    // The stride: the largest number every offset the expression uses is a
+    // multiple of. A stride of one is the plain lattice — one value per
+    // argument. A stride of two or more means the arguments the recursion
+    // reaches all lie on one lattice (the ones congruent to the initial
+    // argument), so the loop can step by the stride and keep one
+    // accumulator per lattice position instead of one per argument.
+    let mut stride = 0i64;
+    for offset in &offsets {
+        stride = gcd(*offset, stride);
+    }
 
     let (op, limit) = base_comparison(cond, &params[0].0)?;
     // The threshold is the `int` lattice's top base point; the descent
@@ -92,8 +102,14 @@ pub(super) fn match_recurrence(
         descent,
         limit,
         width,
+        stride,
         tail: tail.clone(),
     })
+}
+
+/// The largest number that divides both arguments.
+fn gcd(a: i64, b: i64) -> i64 {
+    if b == 0 { a } else { gcd(b, a % b) }
 }
 
 /// Collect the offsets the expression calls the function at, and check that
