@@ -96,6 +96,15 @@ while (i < 10) {
 }
 print(sum);                   // 45
 
+// A C-style `for` loop. The init runs once, then it is a `while` whose body
+// is the loop body followed by the step — so `break`/`continue` are the only
+// things missing, and each init has its own scope.
+let total = 0;
+for (let j = 0; j < 5; j = j + 1) {
+    total = total + j * j;
+}
+print(total);                 // 0 + 1 + 4 + 9 + 16 = 30
+
 // Operators:  + - * / %   == != < <= > >=   && || (short-circuit)   !   unary -
 // Truthiness: a number is false iff it equals 0.
 
@@ -186,10 +195,10 @@ Read [ARCHITECTURE.md](ARCHITECTURE.md) for the full design rationale, and
 
 ## Not supported yet
 
-Strings, arrays, objects, classes, closures, generics, modules, `for`/`do`/
+Strings, arrays, objects, classes, closures, generics, modules, `do`/
 `switch`, `continue`/`break`, `++`/`--`, compound assignment, `? :`,
-`throw`/`try`, string literals, and arrow functions. `void` is a return
-type only — a variable or a parameter cannot have it. The full list is in
+`throw`/`try`, and arrow functions. `void` is a return type only — a
+variable or a parameter cannot have it. The full list is in
 [SPEC.md](SPEC.md).
 
 `number` is an IEEE-754 double, so it is exact only up to 2^53. Use the `int`

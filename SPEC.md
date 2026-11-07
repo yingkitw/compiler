@@ -59,8 +59,8 @@ initializer. Annotations are mandatory for parameters.
   No exponent notation; no numeric separators.
 - **Comments**: `// line comment` and `/* block comment */` (block comments do not
   nest).
-- **Keywords**: `let`, `const`, `function`, `if`, `else`, `while`, `return`,
-  `true`, `false`.
+- **Keywords**: `let`, `const`, `function`, `if`, `else`, `while`, `for`,
+  `return`, `true`, `false`.
 - **Type names**: `number`, `int`, `boolean`, `void`. These are ordinary
   identifiers — `let number = 5;` is legal — and they name a type only when
   they appear in a type-annotation position.
@@ -74,6 +74,7 @@ statement    ::= letDecl
                | funcDecl
                | ifStmt
                | whileStmt
+               | forStmt
                | returnStmt
                | block
                | exprStmt ;
@@ -87,6 +88,12 @@ param        ::= IDENT ":" type ;
 
 ifStmt       ::= "if" "(" expr ")" stmtOrBlock ("else" stmtOrBlock)? ;
 whileStmt    ::= "while" "(" expr ")" stmtOrBlock ;
+forStmt      ::= "for" "(" forInit expr? ";" expr? ")" stmtOrBlock ;
+forInit      ::= letDecl | expr ";" | ";" ;
+               (* the init is optional: a `let`/`const` declaration consumes
+                  its own ";", an expression is followed by one, and a lone
+                  ";" means there is no init. An absent condition is `true`;
+                  an absent step (nothing before the ")") is no step *)
 returnStmt   ::= "return" expr? ";" ;
 block        ::= "{" statement* "}" ;
 stmtOrBlock  ::= block | statement ;
@@ -112,7 +119,7 @@ equality → relational → additive → multiplicative (`*`, `/`, `%`) → unar
 call → primary.
 Assignment is right-associative; all binary operators are left-associative.
 
-**Not supported**: `++`, `--`, compound assignment, `? :`, `for`, `do`,
+**Not supported**: `++`, `--`, compound assignment, `? :`, `do`,
 `switch`, `break`, `continue`, `throw`, `try`, object literals, array literals,
 string literals, `new`, `typeof`, `instanceof`, `in`, `of`, `delete`, `void`
 operator, `as`, generics, classes, modules, arrow functions.
@@ -132,6 +139,17 @@ JavaScript's `%`.
 - **`if` / `else`** — the else branch is optional. The condition must be a
   `boolean` or a `number`.
 - **`while`** — the condition must be a `boolean` or a `number`.
+- **`for`** — C-style: `for (init; condition; step) body`. The init may be a
+  `let` or `const` declaration, an assignment, or absent; the condition may be
+  absent (`true`); the step may be absent. Each of the three parts is
+  terminated by a `;`.
+  The loop is the statements it desugars to: the init runs once, then a
+  `while` over the condition whose body is the loop body followed by the
+  step. The init lives in its own block, so two sequential loops may each
+  declare the same name, and the init's variable is scoped to the loop.
+  `break` and `continue` do not exist, so nothing in a loop body can target
+  the loop rather than the `while` it becomes.
+  The condition must be a `boolean` or a `number`.
 - **`return`** — returns from the enclosing function. A `void` function may
   `return;`; a value-returning function must `return <value>;` on every path.
 - **Block** — introduces a new scope.

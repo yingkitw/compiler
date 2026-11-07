@@ -30,6 +30,64 @@ fn main_fn() {
 }
 
 #[test]
+fn for_loop() {
+    // The example documents each figure; the desugar must produce exactly
+    // the hand-written `while` program's output.
+    assert_eq!(
+        compile_and_run("for_loop"),
+        "10\n3\n2\n1\n130\n14\n1024\n"
+    );
+}
+
+/// The desugared `for` must mean the same thing as the `while` it becomes.
+/// Differential, like the rewrite tests: compile both, assert the same.
+#[test]
+fn a_for_loop_means_the_same_as_the_while_it_desugars_to() {
+    let for_program = "function sum(n: int): int {\n\
+                       \x20   let total: int = 0;\n\
+                       \x20   for (let i: int = 0; i <= n; i = i + 1) {\n\
+                       \x20       total = total + i;\n\
+                       \x20   }\n\
+                       \x20   return total;\n\
+                       }\n\
+                       print(sum(100));\n";
+    let while_program = "function sum(n: int): int {\n\
+                         \x20   let total: int = 0;\n\
+                         \x20   let i: int = 0;\n\
+                         \x20   while (i <= n) {\n\
+                         \x20       total = total + i;\n\
+                         \x20       i = i + 1;\n\
+                         \x20   }\n\
+                         \x20   return total;\n\
+                         }\n\
+                         print(sum(100));\n";
+    assert_eq!(
+        run_source("for_desugar_for", for_program),
+        run_source("for_desugar_while", while_program)
+    );
+}
+
+/// A `for` whose init declares the loop variable must not leak it: the
+/// variable is scoped to the desugared block.
+#[test]
+fn a_for_loops_init_variable_is_scoped_to_the_loop() {
+    let source = "for (let i = 0; i < 3; i = i + 1) { print(i); }\n\
+                  print(i);\n";
+    compile_fails(source, "undefined variable 'i'");
+}
+
+/// Two loops may each declare the same name in their inits.
+#[test]
+fn two_for_loops_may_redeclare_the_init_name() {
+    let source = "let total = 0;\n\
+                  for (let i = 0; i < 3; i = i + 1) { total = total + i; }\n\
+                  for (let i = 0; i < 4; i = i + 1) { total = total + i; }\n\
+                  print(total);\n";
+    // 0+1+2 = 3, then +0+1+2+3 = 9.
+    assert_eq!(run_source("for_redeclare", source), "9\n");
+}
+
+#[test]
 fn number_formatting_matches_javascript() {
     // Regression test: printing used to use "%g", which silently truncated to
     // six significant digits. The runtime now emits the shortest decimal

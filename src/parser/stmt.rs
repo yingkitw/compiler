@@ -1,5 +1,5 @@
-//! Statement parsing: `let`, `const`, `function`, `if`, `while`, `return`
-//! and blocks.
+//! Statement parsing: `let`, `const`, `function`, `if`, `while`, `for`,
+//! `return` and blocks.
 
 use crate::ast::*;
 use crate::lexer::Tok;
@@ -15,6 +15,7 @@ impl Parser {
             Tok::Function => self.func_decl(),
             Tok::If => self.if_stmt(),
             Tok::While => self.while_stmt(),
+            Tok::For => self.for_stmt(),
             Tok::Return => self.return_stmt(),
             Tok::LBrace => {
                 self.enter()?;
@@ -122,6 +123,77 @@ impl Parser {
         self.expect(&Tok::RParen, "')'")?;
         let body = self.stmt_or_block()?;
         Ok(Stmt::While { cond, body })
+    }
+
+    /// A C-style `for` loop, desugared into the statements the language
+    /// already has: the init runs once, then a `while` over the condition
+    /// whose body is the loop body followed by the step.
+    ///
+    /// ```text
+    /// for (let i = 0; i < n; i = i + 1) { body }
+    /// ```
+    ///
+    /// becomes
+    ///
+    /// ```text
+    /// { let i = 0; while (i < n) { body i = i + 1; } }
+    /// ```
+    ///
+    /// The desugar is why the init lives in its own block: two sequential
+    /// loops may each declare `let i`, and shadowing in the loop body stays
+    /// legal. Desugaring in the parser means the code generator needs no
+    /// knowledge of `for` at all — there is no `Stmt::For`.
+    ///
+    /// `break` and `continue` do not exist yet, so nothing in a loop body
+    /// can target the loop rather than the `while` it becomes. If they are
+    /// ever added, they must be taught about this desugar: a `continue`
+    /// in the body still has to run the step.
+    pub(super) fn for_stmt(&mut self) -> Result<Stmt, String> {
+        self.bump(); // 'for'
+        self.expect(&Tok::LParen, "'('")?;
+
+        // The init: a `let`/`const` declaration (which consumes its own
+        // `;`), an assignment expression, or nothing.
+        let init = if *self.peek() == Tok::Let || *self.peek() == Tok::Const {
+            Some(self.let_decl()?)
+        } else if self.eat(&Tok::Semi) {
+            None
+        } else {
+            let e = self.expr()?;
+            self.expect(&Tok::Semi, "';'")?;
+            Some(Stmt::Expr(e))
+        };
+
+        // The condition: absent means `true`, the same as `while (true)`.
+        let cond = if self.eat(&Tok::Semi) {
+            Expr::Bool(true)
+        } else {
+            let e = self.expr()?;
+            self.expect(&Tok::Semi, "';'")?;
+            e
+        };
+
+        // The step: an expression, or nothing.
+        let step = if *self.peek() == Tok::RParen {
+            None
+        } else {
+            Some(self.expr()?)
+        };
+        self.expect(&Tok::RParen, "')'")?;
+
+        let body = self.stmt_or_block()?;
+
+        let mut loop_body = body;
+        if let Some(step) = step {
+            loop_body.push(Stmt::Expr(step));
+        }
+
+        match init {
+            // No init: the desugar is the `while` on its own, without a
+            // block wrapper around nothing.
+            None => Ok(Stmt::While { cond, body: loop_body }),
+            Some(init) => Ok(Stmt::Block(vec![init, Stmt::While { cond, body: loop_body }])),
+        }
     }
 
     pub(super) fn return_stmt(&mut self) -> Result<Stmt, String> {

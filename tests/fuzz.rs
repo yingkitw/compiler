@@ -16,10 +16,10 @@ use std::process::Command;
 /// The vocabulary the fuzzer draws from. It is the language's own, so that
 /// a random sequence of these is often *almost* a program.
 const TOKENS: &[&str] = &[
-    "let", "const", "function", "if", "else", "while", "return", "true", "false",
-    "number", "int", "boolean", "void", "print", "x", "y", "n", "f", "42", "3.5",
-    "(", ")", "{", "}", ";", ",", ":", "=", "==", "!=", "<", "<=", ">", ">=", "+",
-    "-", "*", "/", "%", "&&", "||", "!",
+    "let", "const", "function", "if", "else", "while", "for", "return", "true",
+    "false", "number", "int", "boolean", "void", "print", "x", "y", "n", "f",
+    "42", "3.5", "(", ")", "{", "}", ";", ",", ":", "=", "==", "!=", "<", "<=",
+    ">", ">=", "+", "-", "*", "/", "%", "&&", "||", "!",
 ];
 
 /// A tiny linear congruential generator, so that a failing case can be

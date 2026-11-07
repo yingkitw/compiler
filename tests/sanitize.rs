@@ -94,6 +94,7 @@ fn the_examples_are_clean_under_the_sanitizers() {
         "remainder",
         "tail_call",
         "recurrence",
+        "for_loop",
     ] {
         let status = run_sanitized(example);
         assert!(

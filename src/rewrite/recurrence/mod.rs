@@ -36,14 +36,46 @@
 //! transform (Kapur, Kogge & Palem, *Efficient compilation of linear
 //! recursive functions into object level loops*, 1986).
 //!
+//! For a `number` parameter the loop cannot count a fixed lattice — the
+//! recursion's arguments are `n`, `n-1`, `n-2`, … at whatever fraction `n`
+//! carries, and the loop has to visit exactly those values. So it walks the
+//! argument down to the base case first, with the same subtractions the
+//! recursion performs, and then counts *down* from the argument, replaying
+//! that same descent — the counter becomes the top base point bit for bit,
+//! so the number of iterations is exact, and the values the loop computes
+//! sit on the recursion's own lattice:
+//!
+//! ```text
+//! function f(p0) {
+//!     if (p0 < 2) { return p0; }
+//!     let b = p0;
+//!     while (b >= 2) { b = b - 1; }      // the top base point
+//!     let a = f(b - 1);                  // f(p0 - 2) on the same lattice
+//!     let bb = f(b);                     // f(p0 - 1)
+//!     let i = p0;
+//!     while (i > b) {                    // replays the descent exactly
+//!         let c = bb + a;
+//!         a = bb;
+//!         bb = c;
+//!         i = i - 1;
+//!     }
+//!     return bb;
+//! }
+//! ```
+//!
 //! It is a much bigger hammer than tail-call elimination: it changes a
 //! program from exponential to linear, so the shape it accepts has to be
 //! recognised exactly. It fires only when
 //!
 //! * the function returns a `number` or an `int`, and its first parameter is
-//!   an `int` — the loop counts the values it computes with its own index, and
-//!   a fractional argument would make the loop's count and the recursion's
-//!   depth disagree,
+//!   an `int` — or a `number` whose expression does not read the parameter
+//!   outside the self-calls. An `int` loop can count a fixed lattice, and a
+//!   term that reads the parameter can be given the level's own value. A
+//!   `number` loop cannot: an upward index would leave the recursion's
+//!   lattice (adding one does not undo subtracting one, in floating point),
+//!   so a `number` rewrite counts down from the argument instead — and a
+//!   term that reads the parameter has no value it could see, so such a term
+//!   refuses the rewrite,,
 //! * the base case is the first statement of the body, with the same rules
 //!   as the tail-call rewrite — a statement before it would run once per
 //!   recursion level in the source program and once in the rewritten one,

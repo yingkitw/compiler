@@ -30,7 +30,8 @@
         reported a stack overflow.
 - [x] **Lexer** — tokens, line tracking, `//` and `/* */` comments, numeric literals
 - [x] **Parser** — recursive descent, full operator precedence, `let`/`const`,
-      functions, `if`/`else`, `while`, `return`, blocks, type annotations
+      functions, `if`/`else`, `while`, C-style `for`, `return`, blocks, type
+      annotations
 - [x] **Type system** — `number` / `int` / `boolean` / `void`, fused type checking
       in codegen, diagnostics for mismatches, const reassignment, undefined names,
       missing returns
@@ -39,6 +40,16 @@
       adopts the type of its context, and the lexer keeps a literal's *exact*
       integer value so `9007199254740993` (2^53 + 1) survives — a double would
       round it. No implicit conversion between `int` and `number`.
+- [x] **`for` loops** — C-style `for (init; condition; step) body`, desugared
+      in the parser into the statements the language already has: the init
+      runs once, then a `while` whose body is the loop body followed by the
+      step. No new AST variant and no codegen arm, so the wiring guard needed
+      nothing. The init lives in its own desugared block, so two sequential
+      loops may each declare `let i` and the variable does not leak. Each of
+      the three parts is optional — a missing condition is `true`.
+      The `for (const x of arr)` form waits for arrays. `break`/`continue`
+      do not exist yet; when they do, a `continue` in a `for` body must run
+      the step, which the desugar has to be taught about
 - [x] **Measured what the `int` type is worth** (`scripts/bench_int.py`,
       interleaved rounds, min-of-N): **1.20x** on arithmetic-only code, **2.44x**
       on a function call per iteration, and **0.83x** — a small loss — on
@@ -144,15 +155,16 @@
       lines. The split was a *move*, verified by the test suite — the object
       files it produces are byte-for-byte identical to the ones the single
       files produced
-- [x] **117 inline unit tests + 41 integration tests** — all passing; `cargo clippy
+- [x] **121 inline unit tests + 45 integration tests** — all passing; `cargo clippy
       --all-targets` exits 0; doc-sync enforced by `tests/docs_sync.rs`
 - [x] **Inline unit tests for the lexer, parser, and type rules** — 12 lexer tests
       (token kinds, comments, line tracking, exact integer literals, lex errors),
-      23 parser tests (precedence, associativity, statement forms, parse errors),
-      47 codegen tests (every type rule in `FnGen`, the `int` type, the runtime
-      entry points, plus acceptance cases for scoping, shadowing, recursion, and
-      forward references), and 35 rewrite tests (every shape the tail-call and
-      recurrence rewrites accept, and every shape they must refuse)
+      27 parser tests (precedence, associativity, statement forms including
+      `for`, parse errors), 47 codegen tests (every type rule in `FnGen`, the
+      `int` type, the runtime entry points, plus acceptance cases for scoping,
+      shadowing, recursion, and forward references), and 35 rewrite tests
+      (every shape the tail-call and recurrence rewrites accept, and every
+      shape they must refuse)
 - [x] **Sanitizer, ABI and fuzz gates** — `tests/sanitize.rs` compiles every
       example with the address and undefined-behaviour sanitizers and runs it
       (skipping itself when the sanitizers are unavailable);
@@ -242,7 +254,9 @@
       ARCHITECTURE.md
 - [ ] **Arrays** — `number[]` and `boolean[]` with bounds-checked indexing, `push`,
       `length`. Same allocation strategy decision as strings
-- [ ] **`for` loops** — `for (let i = 0; i < n; i = i + 1)` and `for (const x of arr)`
+- [ ] **`for (const x of arr)`** — needs arrays first (the C-style `for` is
+      done); a `for-of` desugars into an index loop over `arr[i]`, which needs
+      `arr.length` and bounds-checked indexing
 - [ ] **Explicit `int`/`number` conversion** — `x as int` would let a program
       narrow deliberately instead of relying on literal adaptation
 
@@ -453,7 +467,7 @@ there is no cross-platform pass, and the recurrence rewrite only applies to
 integer parameters.
 
 **Evidence (2026-11-03, post-recurrence)**:
-- *Correctness 5/5*: `cargo test` green — 117 inline unit tests + 41 integration
+- *Correctness 5/5*: `cargo test` green — 121 inline unit tests + 45 integration
   tests. Every language feature has a runnable example, and every number the
   runtime prints is verified byte-identical to JavaScript's `Number::toString`.
   The benchmark found and fixed a real precision bug (`%g` truncating to six
