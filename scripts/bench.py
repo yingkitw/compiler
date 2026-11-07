@@ -82,10 +82,10 @@ WORKLOADS = [
         n=35,
         quick_n=30,
         note=(
-            "recursive fibonacci — the shape a recurrence rewrite fires on, "
-            "but with a `number` parameter, which our rewrite requires to be "
-            "an `int` (the loop counts integers), so it stays exponential "
-            "here"
+            "recursive fibonacci — the shape a recurrence rewrite fires on. "
+            "Ours rewrites it for a `number` parameter too (the loop derives "
+            "its bound from the argument's descent), scriptc applies its own "
+            "transform, and the JavaScript engines run it as written"
         ),
     ),
     Workload(
@@ -703,11 +703,12 @@ def write_report(
         "workload from process spawn and engine initialisation.",
         "",
         "Two of the workloads are the same recursion. `fib` is written the way",
-        "a programmer writes it; `fib_recursive` is written so that no rewrite",
-        "can fire on it, and it is the comparison of what the recursion itself",
-        "costs. Our recurrence rewrite needs an `int` parameter, and both of",
-        "these use `number`, so neither is rewritten here — the `int-fib-rewritten`",
-        "workload below is the one that measures the rewrite.",
+        "a programmer writes it, and our recurrence rewrite fires on it — for",
+        "`number` parameters too, since the loop now derives its bound from the",
+        "argument's descent. `fib_recursive` is written so that no rewrite can",
+        "fire on it, and it is the comparison of what the recursion itself",
+        "costs. The `int-fib-rewritten` workload below measures the `int`",
+        "variant of the rewrite.",
         "",
         "`Compile (cold)` is the first build of that workload and `Compile",
         "(warm)` the second. Each toolchain keeps one cache for the whole run,",
@@ -858,10 +859,10 @@ def write_report(
         "the variants and takes the minimum of many rounds.",
     )
 
-    # What the recurrence rewrite buys. The rewrite needs an `int` parameter,
-    # so this compares the `int` fib in the rewritten shape against the same
-    # program in the shape the rewrite cannot fire on — the difference is the
-    # rewrite, not the type.
+    # What the recurrence rewrite buys. Both variants use the `int` type, so
+    # the only difference between them is the shape: the rewrite fires on one
+    # and cannot fire on the other — the difference measured is the rewrite,
+    # not the type.
     rewrite_row = next((r for r in results if r.workload == "int-fib-rewritten"), None)
     unrewritten_row = next((r for r in results if r.workload == "int-fib"), None)
     if rewrite_row and unrewritten_row and not rewrite_row.error and not unrewritten_row.error:
@@ -898,11 +899,11 @@ def write_report(
             "",
             verdict,
             "",
-            "The rewrite needs an `int` parameter — the loop counts integers,"
-            " so a fractional argument would make its count and the"
-            " recursion's depth disagree. A `number` fibonacci is therefore"
-            " left exactly as written, which is why the `fib` workload above"
-            " stays exponential.",
+            "The rewrite fires on a `number` fibonacci too — the loop derives"
+            " its bound from the argument's descent — so the `fib` workload"
+            " above is no longer exponential on our side either. This section"
+            " uses the `int` variants so that the two programs differ only in"
+            " shape: what is measured here is the rewrite, not the type.",
             "",
         ]
 

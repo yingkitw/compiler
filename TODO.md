@@ -194,8 +194,25 @@
       --compile`, `tsrust + node`, `tsc + node`, and our own published build;
       output agreement is a gate, and `bench/RESULTS.md` is committed with each
       change. Result: ~2000x smaller artifacts, ~1.4x faster startup, fastest
-      compile time, roughly tied with a JIT on tight numeric loops, and scriptc
-      ahead on recursive code (reported honestly)
+      compile time, the natural-shape fibonacci now *won* (the `number`
+      recurrence rewrite), and scriptc ahead only on the recursion shape no
+      rewrite recognises (reported honestly)
+- [x] **A `number` recurrence is rewritten too** — the rewrite used to require
+      an `int` parameter, because the loop counted a fixed integer lattice and
+      a fractional argument would make the loop's count and the recursion's
+      depth disagree. The `number` scheme has no fixed lattice, so the loop
+      first walks the argument down to the base case with the same
+      subtractions the recursion performs, then counts *down* from the
+      argument, replaying that descent exactly — the values sit on the
+      recursion's own lattice, so the answer is bit for bit the same
+      (`fib(2.5)` is 2 rewritten and not). The one refusal: a term that reads
+      the parameter, because a downward-counting loop has no level's value to
+      give it. Verified by differential tests in `tests/rewrite.rs` and by the
+      benchmark's criterion: the `fib` workload flipped from 68 ms against
+      scriptc's 48 ms to **23 ms against scriptc's 50 ms** — the whole program
+      now costs about as much as starting the process. The only workload
+      scriptc still wins is `fib_recursive`, the shape no rewrite recognises
+      (46 ms against 67 ms)
 - [x] **JS-compatible number printing** — the runtime emits the shortest
       decimal that round-trips, exactly like `Number.prototype.toString`,
       instead of `%g`'s lossy six significant digits. Found by the benchmark;
@@ -232,24 +249,6 @@
 ## Next
 
 ### High priority
-- [ ] **Rewrite a `number` recurrence, not just an `int` one.** The recurrence
-      rewrite requires an `int` parameter, so a `number` fibonacci is left
-      exactly as written — and scriptc rewrites it anyway, so it beats us on
-      the cross-toolchain `fib` workload (48 ms against our 68 ms). This is
-      the one competitive gap the benchmark still shows.
-      The `int` requirement exists because the loop counts the values it
-      computes with its own index, and a fractional argument makes the loop's
-      count and the recursion's depth disagree (`fib(2.5)` descends 2.5 → 1.5
-      → 0.5 while the loop counts integers). Lifting it means the loop has to
-      derive its own bound from the argument rather than assume integers —
-      probably by counting the number of steps the recursion would take, which
-      is what "hop backwards over the offsets" (below) would also need.
-      Success criterion: `function fib(n: number): number` with the
-      `return fib(n - 1) + fib(n - 2);` shape compiles to a loop, the answer
-      is bit-for-bit what the recursion computes, and the benchmark's `fib`
-      workload is no longer slower than scriptc's.
-      Evidence: MEMORY.md → *The Chain Shape Is Where the Rewrite Shows
-      Itself*; `bench/RESULTS.md`.
 - [ ] **Hop backwards over the offsets.** The rewrite now keeps one value per
       offset the recurrence uses, so `f(n - 1) + f(n - 17)` keeps seventeen
       values and computes every one of them. The literature's refinement
@@ -333,11 +332,12 @@ to the roadmap:
      (`src/rewrite/`): the chain shape is a loop on our side too, and a
      linear recurrence is a loop with two accumulators — so `fib(90)`, which
      is an astronomical number of calls as written, costs ninety.
-     **With one caveat**: scriptc's rewrite works on `number`, ours needs an
-     `int` parameter — so on the cross-toolchain fibonacci, which has to be
-     `number` for the JavaScript toolchains to run it at all, scriptc still
-     wins (48 ms against our 68 ms). That is scoped as a High-priority item
-     above, along with scriptc's *wider* set of shapes.
+     **The caveat is closed (2026-11-07)**: scriptc's rewrite worked on
+     `number` where ours needed an `int` parameter — the descent-replay
+     scheme lifted that, and the cross-toolchain `fib` workload flipped:
+     ours 23 ms against scriptc's 50 ms. What remains is scriptc's *wider*
+     set of shapes: on the recursion written so no rewrite can fire, it
+     still wins (46 ms against our 67 ms).
 - **AssemblyScript** — compiles a TS-like language to WebAssembly with an
   explicit, GC-free memory model (`--runtime stub` gives 1-3 KiB runtimes).
   Worth studying their managed-object layout before designing tsc's runtime,
@@ -562,12 +562,11 @@ the code after the audit commit. Both are fixed. The recurring lesson is that
 the scorecard measures the *code*, not the *claims about the code*: a 30/30
 score said nothing about whether the README's numbers were true.
 
-**The one real competitive gap**: scriptc rewrites a `number` fibonacci into a
-loop; we do not, because our recurrence rewrite requires an `int` parameter.
-So on the cross-toolchain `fib` workload — the one the JavaScript toolchains
-can also run, since they have no integer type — scriptc wins (48 ms against
-our 68 ms). On the shape our rewrite *can* fire on, we win by a wide margin
-(the `int` fibonacci: 25 ms rewritten against 70 ms not). Widening the
-rewrite to `number` parameters needs the loop to count without assuming
-integer steps — that is the honest version of the "hop backwards over the
-offsets" item below.
+**The competitive gap, updated (2026-11-07)**: the `number`-recurrence gap is
+closed — the rewrite fires on `number` parameters by replaying the argument's
+descent, and the `fib` workload flipped to a win (23 ms against scriptc's
+50 ms). What remains is coverage of *shapes*: on the recursion written so no
+rewrite can fire (`fib_recursive`), scriptc's more general optimiser still
+wins (46 ms against our 67 ms). Widening the recognisable shapes — and the
+"hop backwards over the offsets" refinement — are the High-priority items
+above.

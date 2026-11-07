@@ -76,13 +76,12 @@ let q = x as int + y;         // 42 — `as` is a real conversion: (x as int) + 
 // recursion runs in constant stack space.
 function double(n: number): number { return n * 2; }
 // A linear recurrence — a function defined in terms of its own previous
-// values — is rewritten into a loop as well, so fib(90) is an astronomical
-// number of calls as written and ninety after the rewrite.
-//
-// The rewrite needs an `int` parameter: the loop counts the values it
-// computes with its own index, and a fractional argument would make the
-// loop's count and the recursion's depth disagree. A `number` fibonacci is
-// left exactly as it was written.
+// values — is rewritten into a loop as well, for `number` and `int`
+// parameters alike, so fib(90) is an astronomical number of calls as
+// written and ninety after the rewrite. On a `number` parameter the loop
+// derives its bound from the argument's own descent, so a fractional
+// argument stays exact; the one shape refused is a term that reads the
+// parameter itself.
 function fib(n: int): int {
     if (n < 2) { return n; }
     return fib(n - 1) + fib(n - 2);
@@ -192,9 +191,10 @@ Five design points worth knowing:
   into a loop with two accumulators, so the same program computes the same
   answer in linear time and in constant stack space. `fib(90)` is an
   astronomical number of calls as written; after the rewrite it is ninety.
-  The rewrite needs an `int` parameter — the loop counts integers, so a
-  fractional argument would make its count and the recursion's depth
-  disagree — so a `number` fibonacci is left exactly as it was written.
+  This works for a `number` parameter too: the loop derives its bound from
+  the argument's own descent, so a fractional argument stays exact. The one
+  shape refused is a term that reads the parameter itself — a
+  `number`-counted loop has no level's value to give it.
 
 Read [ARCHITECTURE.md](ARCHITECTURE.md) for the full design rationale, and
 [SPEC.md](SPEC.md) for the complete grammar and CLI contract.
@@ -224,11 +224,11 @@ fails if they disagree.
 | | compiler | scriptc | compiler v0.1.0 | deno compile | bun --compile | tsrust + node | tsc + node |
 |---|---|---|---|---|---|---|---|
 | **Artifact size** | **33.8 KiB** | 109 KiB | 32.9 KiB | 65.1 MiB | 60.5 MiB | 133 B JS | 119 B JS |
-| **Startup** | **22.9 ms** | 21.8 ms | 21.7 ms | 32.0 ms | 34.1 ms | 153 ms | 150 ms |
-| **Compile time** | **0.21 s** | 0.12 s | 0.17 s | 1.15 s | 1.07 s | 0.39 s | 0.43 s |
-| **fib(35) runtime** | 68.2 ms | **48.3 ms** | 67.4 ms | 130 ms | 81.0 ms | 242 ms | 241 ms |
-| **fib(35) unrewritten** | 69.4 ms | **46.0 ms** | 68.0 ms | 131 ms | 81.2 ms | 240 ms | 239 ms |
-| **loop(1e8) runtime** | **122 ms** | 123 ms | 126 ms | 134 ms | 130 ms | 248 ms | 255 ms |
+| **Startup** | **24.7 ms** | 23.2 ms | 24.0 ms | 34.1 ms | 35.4 ms | 149 ms | 145 ms |
+| **Compile time** | **0.19 s** | 0.10 s | 0.17 s | 1.01 s | 0.70 s | 0.40 s | 0.32 s |
+| **fib(35) runtime** | **23.4 ms** | 49.8 ms | 66.4 ms | 124 ms | 82.0 ms | 239 ms | 236 ms |
+| **fib(35) unrewritten** | 66.8 ms | **45.8 ms** | 64.9 ms | 124 ms | 81.7 ms | 237 ms | 236 ms |
+| **loop(1e8) runtime** | **121 ms** | 135 ms | 133 ms | 135 ms | 139 ms | 250 ms | 245 ms |
 
 The **Startup** and **Compile time** rows are from the startup workload; the
 other three are from the workload they name.
@@ -239,7 +239,7 @@ Regenerate with `python3 scripts/bench.py`.
 The **Startup** row is the one sensitive to the host: spawning a process costs
 ~5 ms on an idle machine and ~20 ms on a busy one, which changes every ratio
 without changing the differences. The committed report was taken with a load
-average of 16.8 and a 17.7 ms spawn floor, so the startup row above is a
+average of 4.4 and a 17.2 ms spawn floor, so the startup row above is a
 busy-host number; on an idle host it reads about a third of that. The report
 records the load average of the run it came from, so you can tell which
 numbers to trust.
@@ -251,18 +251,22 @@ binary instead of 60 MiB, ~2000x smaller, and ~1.4x faster to start.
 
 **Where we lose.** The honest comparison is [`scriptc`](https://scriptc.dev)
 (Vercel Labs), the only other engine-free native TypeScript compiler. It beats
-us on the recursive workloads: **48 ms against our 68 ms** on the fibonacci, and
-**46 ms against our 69 ms** on the version written so no rewrite can fire.
-Profiling both binaries shows this is **not** a difference in the cost of a
-call — it is a difference in **how many calls are made**: scriptc rewrites a
-self-recursive function into a loop around a single recursive call, which cuts
-the number of function entries by 5.24x. We do the same for the *chain* shape
-(`f(n) = f(n-1)` is a loop on our side too) and for a *linear recurrence*
-(`f(n) = f(n-1) + f(n-2)` is a loop with two accumulators) — but scriptc
-recognises more shapes than we do, and a shape we do not recognise is left
-exactly as it was written. Our tight loop already ties scriptc, and switching
-that loop to 64-bit integers makes it **1.52x** faster while the same change
-does not help recursive calls — the arithmetic was never the issue.
+us on exactly one workload now: the fibonacci written so that no rewrite can
+fire on it — **46 ms against our 67 ms**. Profiling both binaries shows this
+is **not** a difference in the cost of a call — it is a difference in **how
+many calls are made**: scriptc rewrites a self-recursive function into a loop
+around a single recursive call, which cuts the number of function entries by
+5.24x, and it recognises more shapes than we do. A shape we do not recognise
+is left exactly as it was written — and pays the full exponential tree.
+
+**And where the rewrite recognises the shape, we win.** On the fibonacci
+written the way a programmer writes it, our recurrence rewrite removes the
+recursion entirely — for a `number` parameter too, since the loop derives
+its bound from the argument's own descent — so the whole program costs
+**23 ms against scriptc's 50 ms**, about the price of starting the process.
+Our tight loop also ties or beats scriptc, and switching that loop to 64-bit
+integers makes it **1.55x** faster while the same change does not help
+recursive calls — the arithmetic was never the issue.
 
 **A linear recurrence is not exponential.** This is the rewrite at work, and
 it is the biggest thing the compiler does that a JIT cannot do. The same
@@ -270,13 +274,15 @@ fibonacci, twice, both using `int`; the only difference is the shape:
 
 | | runtime |
 |---|---|
-| rewritten into a loop | **25.3 ms** — about the cost of starting the process |
-| left as a recursion | 69.8 ms |
+| rewritten into a loop | **24.1 ms** — about the cost of starting the process |
+| left as a recursion | 68.1 ms |
 
-The rewrite needs an `int` parameter — the loop counts integers, so a
-fractional argument would make its count and the recursion's depth disagree —
-so a `number` fibonacci is left exactly as written. That is why the two
-fibonacci rows above are both exponential.
+A `number` fibonacci is rewritten too — the loop derives its bound from the
+argument's own descent, so a fractional argument stays exact — which is why
+the `fib` row of the table above is no longer exponential on our side. The
+one refusal left: a `number`-parameter recurrence whose expression reads the
+parameter itself, because a downward-counting loop has no level's value to
+give it.
 
 **Where nobody wins.** On a tight numeric counting loop, V8 and
 JavaScriptCore are excellent at that shape, and Cranelift's optimiser does
@@ -290,9 +296,9 @@ illustration of what this project is doing differently: we do not emit
 JavaScript at all.
 
 **The `int` type.** `int` (64-bit) keeps arithmetic exact past 2^53 and is
-measurably faster where arithmetic is the work: **1.52x** on an arithmetic-only
+measurably faster where arithmetic is the work: **1.55x** on an arithmetic-only
 loop. It does not help on recursion — the `int` version of the unrewritten
-fibonacci is **1.01x slower** — which is the evidence that
+fibonacci is **1.03x slower** — which is the evidence that
 the gap to scriptc is not about arithmetic. It is not a cross-toolchain
 comparison — the JavaScript toolchains have no integer type.
 

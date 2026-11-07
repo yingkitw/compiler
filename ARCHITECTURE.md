@@ -151,12 +151,17 @@ over about 450 lines:
   constant stack space. The expression's shape is preserved exactly, so a
   recurrence with a third term, a coefficient or a wider gap is rewritten
   the same way.
-- **The recurrence rewrite needs an `int` parameter.** The loop counts the
-  values it computes with its own index, so a fractional argument would make
-  the loop's count and the recursion's depth disagree — `fib(2.5)` descends
-  2.5 → 1.5 → 0.5, while the loop counts integers. The rewrite therefore
-  applies only to an `int` parameter, and a `number` fibonacci is left
-  exactly as it was written.
+- **The recurrence rewrite works for a `number` parameter too — by replaying
+  the descent.** An `int` loop counts a fixed lattice with its own index, but
+  a `number` argument's lattice is not known until run time: the recursion's
+  arguments are `n`, `n − 1`, `n − 2`, … at whatever fraction `n` carries.
+  The rewrite therefore walks the argument down to the base case first, with
+  the same subtractions the recursion performs, and then counts *down* from
+  the argument, replaying that descent exactly — the values the loop computes
+  sit on the recursion's own lattice, so the answer is the same, bit for bit.
+  The one shape a `number` rewrite refuses is a term that reads the
+  parameter: counting down gives such a term no level's value to see, so
+  `f(n - 1) + f(n - 2) + n` is rewritten only for an `int` parameter.
 - **Why it matters**: a tail call does not need the frame it was made in, so
   the recursion costs one frame instead of one per level. A recursion of ten
   million levels now runs in constant stack space; before, it died with

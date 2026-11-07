@@ -276,7 +276,8 @@ performs the same additions, in the same order, as the recursion does.
 The rewrite fires only when
 
 - the function returns a `number` or an `int`, and its first parameter is an
-  `int`,
+  `int` — or a `number` whose expression does not read the parameter outside
+  the self-calls (see below),
 - the base case is the first statement of the body, with the same rules as
   the tail-call rewrite,
 - the base expression has no side effects. The source program evaluates it
@@ -287,12 +288,25 @@ The rewrite fires only when
   and whose every other part is free of side effects, and
 - every other argument of those calls is a parameter passed on unchanged.
 
-The `int` parameter is a soundness requirement, not a style choice: the loop
-counts the values it computes with its own index, and a fractional argument
-would make the loop's count and the recursion's depth disagree. The loop
-keeps as many values as the widest offset needs, so a recurrence with a gap
-(`f(n - 1) + f(n - 3)`) is rewritten too, as is one with a third term
-(`f(n - 1) + f(n - 2) + 1`) or a coefficient (`2 * f(n - 1)`). The
+For an `int` parameter the loop counts a fixed lattice with its own index:
+a fractional argument cannot occur, so the loop's count and the recursion's
+depth cannot disagree. For a `number` parameter there is no fixed lattice —
+the recursion's arguments are `n`, `n − 1`, `n − 2`, … at whatever fraction
+`n` carries — so the loop first walks the argument down to the base case
+with the same subtractions the recursion performs, finding the largest
+argument that reaches it, and then counts *down* from the argument, replaying
+that descent exactly. The values the loop computes sit on the recursion's
+own lattice, so the answer is the same, bit for bit; and because the loop
+counts down, an expression term that reads the parameter has no level's value
+it could see — such a term refuses the rewrite on a `number` parameter (an
+`int` loop, which counts up from the base, can give it one). One observable
+difference remains: when the descent cannot make progress — an argument near
+`i64::MAX`, at or above 2^53, or an infinity — the rewritten program loops
+where the source program would have exhausted the stack and been reported.
+
+The loop keeps as many values as the widest offset needs, so a recurrence
+with a gap (`f(n - 1) + f(n - 3)`) is rewritten too, as is one with a third
+term (`f(n - 1) + f(n - 2) + 1`) or a coefficient (`2 * f(n - 1)`). The
 expression's shape is preserved exactly, so the answer is the same, bit for
 bit.
 
