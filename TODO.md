@@ -299,6 +299,16 @@
       and the new gates. Dry run green, `cargo package --list` reviewed, the
       poisoned build fingerprint cleaned and the release binary verified
       (its symbols present) before the upload
+- [x] **Published as `compiler` v0.4.0** — the language grew: C-style `for`
+      loops (desugared in the parser), `as` conversions between `number` and
+      `int`, the compound assignments and the increment operators (sugar for
+      assignments), and the recurrence rewrite now fires on a `number`
+      parameter too — which flipped the benchmark's fibonacci from a loss
+      against scriptc into a win. The compiler is also a quarter faster
+      (Cranelift's verifier off in release builds, its `timing` feature
+      dropped), and the tree is split so that no file is over the 450-line
+      convention. Dry run green, `cargo package --list` reviewed, the build
+      fingerprint cleaned and the release binary verified before the upload.
 - [x] **Published as `compiler` v0.3.1** — the documentation audit and the
       benchmark-script fixes: three scripts had been silently measuring the
       recurrence rewrite instead of what they claimed, `bench/RESULTS.md` was
