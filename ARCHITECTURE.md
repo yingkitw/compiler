@@ -89,14 +89,19 @@ over about 450 lines:
 - `parse(tokens: Vec<Token>) -> Result<Program, String>`.
 - `mod.rs` holds the parser state and the token helpers; `stmt.rs` the
   statement forms (`let_decl`, `func_decl`, `if_stmt`, `while_stmt`,
-  `return_stmt`, `block`, expression statements); `expr.rs` one method per
-  precedence level (`logic_or`, `logic_and`, `equality`, `comparison`, `term`,
-  `factor`, `unary`, `call`, `primary`), plus `assignment` at the top.
+  `for_stmt`, `return_stmt`, `block`, expression statements); `expr.rs` one
+  method per precedence level (`logic_or`, `logic_and`, `equality`,
+  `comparison`, `term`, `factor`, `unary`, `call`, `primary`), plus
+  `assignment` at the top.
 - The parser performs only *syntactic* checks plus three well-formedness rules:
   a `let` needs a type or an initializer, a variable or parameter cannot have
   type `void`, and an expression or statement may not nest deeper than
   `MAX_DEPTH`. The `main` shape is checked by the code generator, and all type
   checking happens there too.
+- `for_stmt` is a desugar, not a statement form: the parser emits a block
+  holding the init and a `while` whose body is the loop body followed by the
+  step, so there is no `Stmt::For` anywhere. The AST, the rewrites and the
+  code generator gained nothing and changed not at all.
 
 ### `rewrite/` — source-to-source optimisations
 - `optimise(prog: &mut Program)` runs every rewrite over the program:
@@ -322,6 +327,23 @@ the rewrite can be tested on its own — by inspecting the AST it produces.
 what the AST knows. In particular it cannot see types, so it has to be
 conservative about which shapes it accepts: it rewrites only a call it can
 see is self-recursive, in tail position, with a decreasing argument.
+
+### `for` is desugared in the parser, not added to the AST
+**Decision**: a C-style `for` loop is rewritten *while parsing* into a block
+containing the init and a `while` whose body is the loop body followed by the
+step. There is no `Stmt::For`.
+**Why**: adding an AST variant forces a parser arm *and* a codegen arm (see
+MEMORY.md → *AST / Parser Sync*), and the language already has the loop the
+`for` abbreviates. Desugaring in the parser gives the feature with zero
+changes to the AST, the rewrites, or the code generator — and the rewrites
+see a shape they already know how to walk. Wrapping the init in its own block
+gives the scoping for free: the loop variable cannot leak, and two
+sequential loops may declare the same name.
+**Trade-off**: the `for` is invisible from the AST onward, so anything that
+needs to know where the loop's step lives — a future `continue`, which must
+still run it — has to understand the desugar. The step being the *last*
+statement of the desugared body is what makes `continue` correct if loops
+ever grow one.
 
 ### The three biggest modules are directories
 **Decision**: `parser/`, `rewrite/` and `codegen/` are directories of files

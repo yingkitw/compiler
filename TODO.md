@@ -135,7 +135,7 @@
 - [x] **PIC** — `is_pic` enabled so external calls link on macOS arm64
 - [x] **Examples** — `hello.ts`, `fib.ts`, `control.ts`, `main.ts`, `numbers.ts`,
       `integers.ts`, `remainder.ts`, `tail_call.ts`, `recurrence.ts`,
-      `stack_overflow.ts`
+      `stack_overflow.ts`, `for_loop.ts`
 - [x] **Doc-sync enforcement** — `tests/docs_sync.rs` checks the AGENTS.md module
       tree, ARCHITECTURE.md mentions, TODO.md test counts, and README doc links
 - [x] **Profiled the recursion gap to scriptc — it is algorithmic, not codegen**
@@ -400,6 +400,19 @@ Recorded per AGENTS.md Step 7. Total is /30.
 | 2026-11-03 (post-recurrence) | 5 | 4 | 5 | 5 | 5 | 5 | 29 |
 | 2026-11-03 (post-audit) | 5 | 5 | 5 | 5 | 5 | 5 | 30 |
 | 2026-11-05 (post-doc-audit) | 5 | 5 | 5 | 5 | 5 | 5 | 30 |
+| 2026-11-07 (post-for-loop) | 5 | 5 | 5 | 5 | 5 | 5 | 30 |
+
+**Evidence (2026-11-07, post-for-loop)**: the C-style `for` loop landed as a
+parser-level desugar — no AST variant, no codegen arm, no runtime change — so
+generated code for every program that does not use `for` is byte-identical
+(no benchmark workload does; the report stands). Coverage grew with the
+feature: 4 parser unit tests, 4 e2e tests (including a differential one
+against the hand-written `while`), the sanitizer gate, and the fuzzer's
+vocabulary. The docs were audited against the code in the same pass: README,
+SPEC (grammar included), ARCHITECTURE, TODO, AGENTS and MEMORY all describe
+the desugar, and the two doc-sync count gates pass at 121 inline + 45
+integration tests. One wrong arithmetic comment in the example itself
+(`129` for a sum of `130`) was caught by the audit and fixed.
 
 **Evidence (2026-11-05, post-doc-audit)**: an audit of every markdown file
 against the code. It found one real bug and a dozen drifts.
