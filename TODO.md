@@ -271,6 +271,15 @@
       `arr.length` and bounds-checked indexing
 
 ### Medium priority
+- [ ] **Split the two files that crossed the ~450-line convention** — the audit
+      convention (AGENTS.md Step 6) is that no file exceeds ~450 lines, and two
+      now do: `src/rewrite/recurrence/mod.rs` (629, grown by the `number`-
+      parameter work) and `tests/rewrite.rs` (570). Success criterion: both
+      files split along their existing seams as a pure *move* — same unit
+      tests before and after, `pub(super)` for cross-file methods — proven by
+      byte-identical object-file SHA-256s, per MEMORY.md → *Splitting a Module
+      Without Changing It*. Do it after the `number`-recurrence item lands,
+      not mid-flight.
 - [ ] **Decide the binary name** — `cargo install compiler` currently installs a
       command called `tsc`, the same name as TypeScript's official compiler, and
       ours shadows it when earlier on `PATH`. Options: keep `tsc` as the primary
@@ -423,6 +432,11 @@ SPEC (grammar included), ARCHITECTURE, TODO, AGENTS and MEMORY all describe
 the desugar, and the two doc-sync count gates pass at 121 inline + 45
 integration tests. One wrong arithmetic comment in the example itself
 (`129` for a sum of `130`) was caught by the audit and fixed.
+*Maintainability caveat, recorded the same day: with the `as` casts and the
+`number`-recurrence work landed, two files exceed the ~450-line convention —
+`src/rewrite/recurrence/mod.rs` (629) and `tests/rewrite.rs` (570). The
+scorecard's Maintainability 5 is therefore provisional; the splits are a
+TODO item with the move-and-prove method named.*
 
 **Evidence (2026-11-05, post-doc-audit)**: an audit of every markdown file
 against the code. It found one real bug and a dozen drifts.
