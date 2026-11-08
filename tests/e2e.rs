@@ -12,6 +12,27 @@ fn hello() {
 }
 
 #[test]
+fn for_of() {
+    assert_eq!(compile_and_run("for_of"), "60\ntrue\nfalse\ntrue\n");
+}
+
+#[test]
+fn arrays() {
+    assert_eq!(
+        compile_and_run("arrays"),
+        "1\n5\n4\n2\ntrue\nfalse\n"
+    );
+}
+
+#[test]
+fn strings() {
+    assert_eq!(
+        compile_and_run("strings"),
+        "hello\nhello world\ntrue\nfalse\ntrue\nhi, tsc\n"
+    );
+}
+
+#[test]
 fn fib() {
     assert_eq!(compile_and_run("fib"), "6765\n");
 }
@@ -46,6 +67,27 @@ fn cast() {
     assert_eq!(
         compile_and_run("cast"),
         "3\n-3\n3\n9007199254740993\n9007199254740992\n0\n9223372036854775807\n-9223372036854775808\n7\n3\n9\n"
+    );
+}
+
+#[test]
+fn block_expr() {
+    assert_eq!(compile_and_run("block_expr"), "3\n20\n9\n");
+}
+
+#[test]
+fn conditional() {
+    assert_eq!(
+        compile_and_run("conditional"),
+        "1\n2\n10\n42\n7\n2\n"
+    );
+}
+
+#[test]
+fn logical_assign() {
+    assert_eq!(
+        compile_and_run("logical_assign"),
+        "false\nfalse\ntrue\ntrue\ntrue\n"
     );
 }
 

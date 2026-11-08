@@ -46,6 +46,7 @@ pub(super) fn match_recurrence(
         cond,
         then,
         els,
+        ..
     } = &body[0]
     else {
         return None;
@@ -53,7 +54,11 @@ pub(super) fn match_recurrence(
     if !els.is_empty() || then.len() != 1 {
         return None;
     }
-    let Stmt::Return(Some(base)) = &then[0] else {
+    let Stmt::Return {
+        value: Some(base),
+        ..
+    } = &then[0]
+    else {
         return None;
     };
     // The base expression must be free of side effects: the source program
@@ -64,7 +69,11 @@ pub(super) fn match_recurrence(
     }
 
     // The rest of the body is a single return.
-    let [Stmt::Return(Some(tail))] = &body[1..] else {
+    let [Stmt::Return {
+        value: Some(tail),
+        ..
+    }] = &body[1..]
+    else {
         return None;
     };
 
@@ -131,6 +140,7 @@ fn collect_offsets(
     match expr {
         Expr::Call {
             name: callee,
+            receiver: None,
             args,
         } if callee == name => match call_offset(args, params) {
             Some(offset) => {
@@ -142,7 +152,7 @@ fn collect_offsets(
         // A call to another function has side effects the rewrite would
         // reorder, so it is not accepted.
         Expr::Call { .. } => false,
-        Expr::Num(_) | Expr::Bool(_) => true,
+        Expr::Num(_) | Expr::Bool(_) | Expr::Str(_) => true,
         Expr::Var(v) => !(forbid_param_reads && *v == params[0].0),
         Expr::Bin { lhs, rhs, .. } => {
             collect_offsets(lhs, name, params, offsets, depth + 1, forbid_param_reads)
@@ -157,6 +167,8 @@ fn collect_offsets(
         }
         // An assignment has a side effect.
         Expr::Assign { .. } => false,
+        Expr::Cond { .. } | Expr::BlockExpr { .. } => false,
+        Expr::Array(_) | Expr::Index { .. } | Expr::Member { .. } => false,
     }
 }
 

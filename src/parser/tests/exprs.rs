@@ -77,7 +77,11 @@ fn unary_minus_binds_tighter_than_multiplication() {
 #[test]
 fn parses_call_arguments() {
     match only_expr("f(1, true);") {
-        Expr::Call { name, args } => {
+        Expr::Call {
+            name,
+            receiver: None,
+            args,
+        } => {
             assert_eq!(name, "f");
             assert_eq!(args.len(), 2);
         }
@@ -101,7 +105,11 @@ fn parses_parenthesised_expression() {
 fn parses_call_on_a_named_variable() {
     // `x(1)` parses fine — whether `x` is a function is a codegen concern.
     match only_expr("x(1);") {
-        Expr::Call { name, args } => {
+        Expr::Call {
+            name,
+            receiver: None,
+            args,
+        } => {
             assert_eq!(name, "x");
             assert_eq!(args.len(), 1);
         }
@@ -200,6 +208,28 @@ fn a_compound_assignment_desugars_into_an_assignment() {
 }
 
 #[test]
+fn parses_a_block_expression() {
+    match only_expr("({ let y = 1; y + 1; });") {
+        Expr::BlockExpr { stmts, value } => {
+            assert_eq!(stmts.len(), 1);
+            assert!(matches!(&*value, Expr::Bin { op: BinOp::Add, .. }));
+        }
+        other => panic!("expected a block expression, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_conditional_binds_looser_than_addition() {
+    match only_expr("true ? 1 : 2 + 3;") {
+        Expr::Cond { else_expr, .. } => match &*else_expr {
+            Expr::Bin { op: BinOp::Add, .. } => {}
+            other => panic!("expected else branch to add, got {other:?}"),
+        },
+        other => panic!("expected a conditional, got {other:?}"),
+    }
+}
+
+#[test]
 fn every_compound_assignment_has_its_own_operator() {
     for (src, op) in [
         ("x += 1;", BinOp::Add),
@@ -207,6 +237,8 @@ fn every_compound_assignment_has_its_own_operator() {
         ("x *= 1;", BinOp::Mul),
         ("x /= 1;", BinOp::Div),
         ("x %= 1;", BinOp::Rem),
+        ("x &&= true;", BinOp::And),
+        ("x ||= false;", BinOp::Or),
     ] {
         match only_expr(src) {
             Expr::Assign { value, .. } => match &*value {
@@ -225,7 +257,10 @@ fn the_increment_forms_desugar_into_assignments() {
     for src in ["x++;", "++x;"] {
         let prog = parse_src(src);
         match &prog.stmts[0] {
-            Stmt::Expr(Expr::Assign { name, value }) => {
+            Stmt::Expr {
+                expr: Expr::Assign { name, value },
+                ..
+            } => {
                 assert_eq!(name, "x");
                 assert!(
                     matches!(&**value, Expr::Bin { op: BinOp::Add, .. }),

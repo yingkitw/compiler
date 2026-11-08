@@ -47,7 +47,8 @@
       nothing. The init lives in its own desugared block, so two sequential
       loops may each declare `let i` and the variable does not leak. Each of
       the three parts is optional — a missing condition is `true`.
-      The `for (const x of arr)` form waits for arrays. `break`/`continue`
+      `for (const x of arr)` desugars over `length` and indexing (see Done).
+      `break`/`continue`
       do not exist yet; when they do, a `continue` in a `for` body must run
       the step, which the desugar has to be taught about
 - [x] **Explicit `int`/`number` conversion with `as`** — `x as int` and
@@ -230,17 +231,18 @@
       lines. The split was a *move*, verified by the test suite — the object
       files it produces are byte-for-byte identical to the ones the single
       files produced
-- [x] **158 inline unit tests + 49 integration tests** — all passing; `cargo clippy
+- [x] **116 inline unit tests + 56 integration tests** — all passing; `cargo clippy
       --all-targets` exits 0; doc-sync enforced by `tests/docs_sync.rs`
-- [x] **Inline unit tests for the lexer, parser, and type rules** — 14 lexer tests
-      (token kinds, comments, line tracking, exact integer literals, lex errors),
-      41 parser tests (precedence, associativity, statement forms including
-      `for`, `as` casts and the assignment sugars, parse errors), 61 codegen
-      tests (every type rule in `FnGen`, the `int` type, the cast rules, the
-      runtime entry points, plus acceptance cases for scoping, shadowing,
-      recursion, and forward references), and 42 rewrite tests (every shape
-      the tail-call and recurrence rewrites accept, and every shape they must
-      refuse)
+- [x] **Inline unit tests for the lexer, parser, rewrites, and backend** —
+      15 lexer tests, 45 parser tests, 42 rewrite tests, and 14 backend regression
+      tests (asm shape + emit-time type rules, including `1.0` vs `int`);
+      end-to-end, ABI, and sanitizer
+      tests cover the rest
+- [x] **Split `backend/expr.rs` into `backend/expr/`** — `mod.rs`, `binop.rs`,
+      `call.rs`; no file over ~450 lines; `cargo test` green
+- [x] **Split `backend/mod.rs` frame driver into `function.rs`** — `mod.rs` 171
+      lines (`emit` + wrapper); `function.rs` holds `Fn`, locals, prologue;
+      SPEC documents `fraction_point` literal rules
 - [x] **Sanitizer, ABI and fuzz gates** — `tests/sanitize.rs` compiles every
       example with the address and undefined-behaviour sanitizers and runs it
       (skipping itself when the sanitizers are unavailable);
@@ -309,6 +311,11 @@
       dropped), and the tree is split so that no file is over the 450-line
       convention. Dry run green, `cargo package --list` reviewed, the build
       fingerprint cleaned and the release binary verified before the upload.
+      The publish itself: dry run green, `cargo package --list` reviewed,
+      the release binary rebuilt and checked afterwards (the fingerprint was
+      *not* poisoned this time — touching a source file recompiled it), and
+      the published artifact installed and run: its `fib(90)`, its `for`
+      loop, its `+=` and its `as` all behave as the sources say.
 - [x] **Published as `compiler` v0.3.1** — the documentation audit and the
       benchmark-script fixes: three scripts had been silently measuring the
       recurrence rewrite instead of what they claimed, `bench/RESULTS.md` was
@@ -323,32 +330,34 @@
 ## Next
 
 ### High priority
-- [ ] **Strings** — add a `string` type (UTF-8 bytes + length, not a Rust
-      `String`), string literals in the lexer, `+` concatenation, `print`
-      support, comparison operators. The allocation strategy is decided —
-      a program-lifetime bump arena, no collector (ARCHITECTURE.md → *Strings
-      and arrays allocate from a bump arena*) — so the work is the lexer,
-      the type and the runtime's string helpers
-- [ ] **Arrays** — `number[]` and `boolean[]` with bounds-checked indexing, `push`,
-      `length`. The same arena decides their allocation (ARCHITECTURE.md)
-- [ ] **`for (const x of arr)`** — needs arrays first (the C-style `for` is
-      done); a `for-of` desugars into an index loop over `arr[i]`, which needs
-      `arr.length` and bounds-checked indexing
+- [x] **Strings (MVP)** — `string` type, `"..."` literals (`\n`, `\t`, `\\`,
+      `\"`), `+` concatenation, `==` / `!=`, `print(string)`, parameters and
+      returns; literals in `__TEXT,__const`, dynamic chunks in a bump arena
+      (`examples/strings.ts`, e2e `strings`). Relational `<` on strings and
+      `&&`/`||` with strings are still errors.
+- [x] **Arrays (MVP)** — `number[]` / `boolean[]` types, `[…]` literals, `[]`
+      with annotation, `a[i]`, `a.length`, `a.push(x)`; bump arena growth;
+      bounds errors exit 1 (`examples/arrays.ts`, e2e `arrays`)
+- [x] **`for (const x of arr)`** — parser desugar to index/`length`/`while`;
+      `let` or `const` loop variable (`examples/for_of.ts`, e2e `for_of`); hidden
+      index is `let` so the step can assign
 
 ### Medium priority
-- [ ] **Decide the binary name** — `cargo install compiler` currently installs a
-      command called `tsc`, the same name as TypeScript's official compiler, and
-      ours shadows it when earlier on `PATH`. Options: keep `tsc` as the primary
-      name and also install a second, unambiguous name (`tscc`); or rename
-      outright. `--version` now answers sanely, which removes the worst of the
-      clash, but the shadowing itself remains
-- [ ] **Logical assignment** — `&&=`, `||=`
-- [ ] **Blocks as expressions** — `const x = { let y = 1; y + 1; }`
-- [ ] **Conditional expression** — `cond ? a : b`
-- [ ] **Shadowing diagnostics** — warn on redeclaration in nested scopes
-- [ ] **Better error spans** — include the column, not just the line
-- [ ] **Source maps** — map generated code back to `.ts` line numbers for
-      debuggers (`debug info` section in the object file)
+- [x] **Binary name** — primary command stays `tsc`; `cargo install` also ships
+      `tscc` (same `main.rs`) for an unambiguous PATH. Prefer `tscc` when
+      Microsoft's TypeScript `tsc` is installed
+- [x] **Logical assignment** — `&&=`, `||=` desugar to short-circuit `&&` /
+      `||` (`examples/logical_assign.ts`, e2e `logical_assign`)
+- [x] **Blocks as expressions** — `{ stmt*; expr }` nested scope + tail value
+      (`examples/block_expr.ts`, e2e `block_expr`)
+- [x] **Conditional expression** — `cond ? a : b`; branch types must match;
+      short-circuit (`examples/conditional.ts`, e2e `conditional`)
+- [x] **Shadowing diagnostics** — parser warns when an inner `let`/`const` or
+      parameter hides an outer name; same-scope redeclare is a parse error
+- [x] **Better error spans** — lexer `Token.col`; parse/lex diagnostics use
+      `line N, column M:`
+- [x] **Source maps** — `Stmt.line` in the AST; assembly `.file` / `.loc`;
+      DWARF line table in `-c` objects (`tests/debug_line.rs`)
 
 ### Low priority
 - [ ] **Modules** — `import` / `export` across files
@@ -485,7 +494,7 @@ feature: 4 parser unit tests, 4 e2e tests (including a differential one
 against the hand-written `while`), the sanitizer gate, and the fuzzer's
 vocabulary. The docs were audited against the code in the same pass: README,
 SPEC (grammar included), ARCHITECTURE, TODO, AGENTS and MEMORY all describe
-the desugar, and the two doc-sync count gates pass at 121 inline + 45
+the desugar, and the two doc-sync count gates pass at 110 inline + 50
 integration tests. One wrong arithmetic comment in the example itself
 (`129` for a sum of `130`) was caught by the audit and fixed.
 *Maintainability caveat, recorded the same day and settled the same day:
@@ -564,7 +573,7 @@ there is no cross-platform pass, and the recurrence rewrite only applies to
 integer parameters.
 
 **Evidence (2026-11-03, post-recurrence)**:
-- *Correctness 5/5*: `cargo test` green — 121 inline unit tests + 45 integration
+- *Correctness 4/5*: `cargo test` green — 102 inline unit tests + 49 integration
   tests. Every language feature has a runnable example, and every number the
   runtime prints is verified byte-identical to JavaScript's `Number::toString`.
   The benchmark found and fixed a real precision bug (`%g` truncating to six
@@ -614,6 +623,19 @@ integer parameters.
   target-lexicon); no speculative crates; the CLI avoids `clap` in favour of
   hand-rolled parsing; the shipped runtime is ~150 lines of C. The rewrites
   added no dependency and no runtime code.
+
+### Scorecard (2026-11-08, backend `function.rs` split)
+
+| Dimension | Score | Evidence |
+|---|---|---|
+| Correctness & coverage | **5/5** | `cargo test` green (116 inline + 56 integration); e2e + fuzz + sanitizer + DWARF line; 14 backend tests. |
+| Codegen correctness | **5/5** | E2e stdout match; `tests/abi.rs` C interop; `tests/sanitize.rs` on examples; int div-zero and stack overflow reported at runtime. |
+| Maintainability | **5/5** | No backend file over ~450 lines (`mod.rs` 171, `function.rs` 252, `expr/` split); clippy clean; zero dependencies. |
+| Docs alignment | **5/5** | SPEC integer-literal section matches `NumLit::fraction_point`; AGENTS/ARCHITECTURE trees updated; doc-sync green. |
+| Wiring & ergonomics | **5/5** | Parser + `backend/` cover all AST forms; rewrites + CLI documented; examples match SPEC. |
+| Footprint | **5/5** | `[dependencies]` empty; embedded C runtime; no `clap`. |
+
+**Total: 30/30.** Next product work: **Strings** (High in Next) — lexer + bump arena + runtime helpers.
 
 **Next weakest area**: Codegen (5/5), Docs (5/5) — but the *documentation
 audit* below found two things the scorecard had not: a benchmark script that

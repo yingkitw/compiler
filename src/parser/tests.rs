@@ -25,7 +25,7 @@ fn only_expr(src: &str) -> Expr {
     let prog = parse_src(src);
     assert_eq!(prog.stmts.len(), 1, "expected exactly one statement");
     match &prog.stmts[0] {
-        Stmt::Expr(e) => e.clone(),
+        Stmt::Expr { expr, .. } => expr.clone(),
         other => panic!("expected an expression statement, got {other:?}"),
     }
 }

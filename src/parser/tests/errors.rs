@@ -8,8 +8,8 @@ fn rejects_missing_semicolon() {
 
 #[test]
 fn rejects_unknown_type() {
-    let err = parse_err("let x: string = 1;");
-    assert!(err.contains("unsupported type 'string'"), "got: {err}");
+    let err = parse_err("let x: object = 1;");
+    assert!(err.contains("unsupported type 'object'"), "got: {err}");
 }
 
 #[test]
@@ -34,7 +34,10 @@ fn rejects_call_to_non_function() {
 #[test]
 fn reports_the_line_of_the_error() {
     let err = parse_err("let a = 1;\nlet b = 2;\nlet c;");
-    assert!(err.starts_with("line 3:"), "got: {err}");
+    assert!(
+        err.starts_with("line 3, column"),
+        "got: {err}"
+    );
 }
 
 #[test]

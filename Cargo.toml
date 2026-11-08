@@ -3,12 +3,12 @@ name = "compiler"
 version = "0.4.0"
 edition = "2024"
 rust-version = "1.96"
-description = "A tiny TypeScript-subset compiler that emits native binaries via Cranelift"
+description = "A tiny TypeScript-subset compiler that emits native binaries via assembly + cc"
 license = "Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/yingkitw/compiler.git"
 homepage = "https://github.com/yingkitw/compiler"
-keywords = ["compiler", "typescript", "cranelift", "native", "codegen"]
+keywords = ["compiler", "typescript", "native", "assembly"]
 categories = ["compilers", "command-line-utilities"]
 exclude = [
     "AGENTS.md",     # agent-local working doc (gitignored)
@@ -19,17 +19,13 @@ authors = ["Ying Kit WONG"]
 
 [[bin]]
 # The package is `compiler` (the crates.io name), but the installed binary is
-# `tsc`, which is what users type.
+# `tsc`, which is what users type. `tscc` is the same binary under an
+# unambiguous name (avoids shadowing Microsoft's `tsc` on PATH).
 name = "tsc"
 path = "src/main.rs"
 
+[[bin]]
+name = "tscc"
+path = "src/main.rs"
+
 [dependencies]
-cranelift-codegen = { version = "0.136.5", default-features = false, features = [
-    "std",
-    "unwind",
-    "host-arch",
-] }
-cranelift-frontend = "0.136.5"
-cranelift-module = "0.136.5"
-cranelift-object = "0.136.5"
-target-lexicon = "0.13.5"

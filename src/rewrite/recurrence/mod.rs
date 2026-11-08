@@ -159,6 +159,7 @@ pub fn eliminate_recurrences(prog: &mut Program) {
             params,
             ret,
             body,
+            ..
         } = stmt
         {
             rewrite_recurrence(name, params, *ret, body);

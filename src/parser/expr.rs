@@ -1,5 +1,6 @@
 //! Expression parsing: one method per precedence level, from the loosest
-//! (`||`) to the tightest (a primary).
+//! (assignment) to the tightest (a primary). The conditional `?:` sits between
+//! assignment and `||`, as in TypeScript.
 
 use crate::ast::*;
 use crate::lexer::Tok;
@@ -12,7 +13,7 @@ impl Parser {
     }
 
     pub(super) fn assignment(&mut self) -> Result<Expr, String> {
-        let lhs = self.logic_or()?;
+        let lhs = self.conditional()?;
         // A compound assignment is sugar: `x += e` is `x = x + e`. The
         // desugar is here rather than in the code generator, so the AST and
         // the type rules need no new case at all — the assignment's own
@@ -24,6 +25,8 @@ impl Parser {
             Tok::StarEq => Some(BinOp::Mul),
             Tok::SlashEq => Some(BinOp::Div),
             Tok::PercentEq => Some(BinOp::Rem),
+            Tok::AndEq => Some(BinOp::And),
+            Tok::OrEq => Some(BinOp::Or),
             _ => None,
         };
         if let Some(op) = op {
@@ -42,8 +45,8 @@ impl Parser {
                     }),
                 }),
                 _ => Err(format!(
-                    "line {}: invalid assignment target",
-                    self.line()
+                    "{} invalid assignment target",
+                    self.loc()
                 )),
             };
         }
@@ -55,12 +58,32 @@ impl Parser {
                     value: Box::new(value),
                 }),
                 _ => Err(format!(
-                    "line {}: invalid assignment target",
-                    self.line()
+                    "{} invalid assignment target",
+                    self.loc()
                 )),
             };
         }
         Ok(lhs)
+    }
+
+    /// `logicalOr ? assignment : conditional` — the else branch is
+    /// right-associative for nested ternaries.
+    pub(super) fn conditional(&mut self) -> Result<Expr, String> {
+        let cond = self.logic_or()?;
+        if self.eat(&Tok::Question) {
+            self.enter()?;
+            self.deepen()?;
+            let then_expr = self.assignment()?;
+            self.expect(&Tok::Colon, "':'")?;
+            let else_expr = self.conditional()?;
+            self.leave();
+            return Ok(Expr::Cond {
+                cond: Box::new(cond),
+                then_expr: Box::new(then_expr),
+                else_expr: Box::new(else_expr),
+            });
+        }
+        Ok(cond)
     }
 
     pub(super) fn logic_or(&mut self) -> Result<Expr, String> {
@@ -120,7 +143,7 @@ impl Parser {
             if self.eat(&Tok::As) {
                 let ty = self.type_annotation()?;
                 if ty == Type::Void {
-                    return Err(format!("line {}: cannot cast to 'void'", self.line()));
+                    return Err(format!("{} cannot cast to 'void'", self.loc()));
                 }
                 lhs = Expr::Cast { expr: Box::new(lhs), ty };
                 lhs = self.tight_tail(lhs)?;
@@ -252,24 +275,52 @@ impl Parser {
 
     pub(super) fn call(&mut self) -> Result<Expr, String> {
         let mut e = self.primary()?;
-        while self.eat(&Tok::LParen) {
-            let mut args = Vec::new();
-            while *self.peek() != Tok::RParen {
-                args.push(self.expr()?);
-                if !self.eat(&Tok::Comma) {
-                    break;
+        loop {
+            if self.eat(&Tok::LParen) {
+                let mut args = Vec::new();
+                while *self.peek() != Tok::RParen {
+                    args.push(self.expr()?);
+                    if !self.eat(&Tok::Comma) {
+                        break;
+                    }
                 }
+                self.expect(&Tok::RParen, "')'")?;
+                e = match e {
+                    Expr::Var(name) => Expr::Call {
+                        name,
+                        receiver: None,
+                        args,
+                    },
+                    Expr::Member { base, name } => Expr::Call {
+                        name,
+                        receiver: Some(base),
+                        args,
+                    },
+                    _ => {
+                        return Err(format!(
+                            "{} can only call named functions or methods",
+                            self.loc()
+                        ));
+                    }
+                };
+            } else if self.eat(&Tok::LBracket) {
+                self.enter()?;
+                let index = self.expr()?;
+                self.leave();
+                self.expect(&Tok::RBracket, "']'")?;
+                e = Expr::Index {
+                    base: Box::new(e),
+                    index: Box::new(index),
+                };
+            } else if self.eat(&Tok::Dot) {
+                let name = self.expect_ident("field name")?;
+                e = Expr::Member {
+                    base: Box::new(e),
+                    name,
+                };
+            } else {
+                break;
             }
-            self.expect(&Tok::RParen, "')'")?;
-            e = match e {
-                Expr::Var(name) => Expr::Call { name, args },
-                _ => {
-                    return Err(format!(
-                        "line {}: can only call named functions",
-                        self.line()
-                    ))
-                }
-            };
         }
         Ok(e)
     }
@@ -288,21 +339,47 @@ impl Parser {
                 self.bump();
                 Ok(Expr::Bool(false))
             }
+            Tok::Str(s) => {
+                self.bump();
+                Ok(Expr::Str(s))
+            }
             Tok::Ident(name) => {
                 self.bump();
                 Ok(Expr::Var(name))
             }
             Tok::LParen => {
-                self.bump();
-                self.enter()?;
+                let mut opens = 0usize;
+                while *self.peek() == Tok::LParen {
+                    self.bump();
+                    opens += 1;
+                    if opens > MAX_DEPTH {
+                        return Err("expression or statement nested too deeply".to_string());
+                    }
+                }
                 let e = self.expr()?;
-                self.leave();
-                self.expect(&Tok::RParen, "')'")?;
+                for _ in 0..opens {
+                    self.expect(&Tok::RParen, "')'")?;
+                }
                 Ok(e)
             }
+            Tok::LBracket => {
+                self.bump();
+                let mut elems = Vec::new();
+                if !self.eat(&Tok::RBracket) {
+                    loop {
+                        elems.push(self.expr()?);
+                        if self.eat(&Tok::RBracket) {
+                            break;
+                        }
+                        self.expect(&Tok::Comma, "','")?;
+                    }
+                }
+                Ok(Expr::Array(elems))
+            }
+            Tok::LBrace => self.block_expr(),
             other => Err(format!(
-                "line {}: expected an expression, found {:?}",
-                self.line(),
+                "{} expected an expression, found {:?}",
+                self.loc(),
                 other
             )),
         }

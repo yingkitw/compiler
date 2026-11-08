@@ -3,7 +3,7 @@
 //! Usage: `tsc <input.ts> [-o <output>] [-c]`
 
 mod ast;
-mod codegen;
+mod backend;
 mod lexer;
 mod parser;
 mod rewrite;
@@ -82,6 +82,9 @@ fn run(input: &Path, output: Option<PathBuf>, compile_only: bool) -> Result<Path
 
     let toks = lexer::lex(&src)?;
     let mut prog = parser::parse(toks)?;
+    for w in &prog.warnings {
+        eprintln!("warning: {}", w);
+    }
     // The source-to-source rewrites run between parsing and code generation:
     // a self-recursive call in tail position becomes a loop, and a linear
     // recurrence becomes a loop as well.
@@ -89,9 +92,10 @@ fn run(input: &Path, output: Option<PathBuf>, compile_only: bool) -> Result<Path
     // The compiler recurses over the AST, so it runs on a thread with a large
     // stack: a program with a very long expression should get a diagnostic,
     // not a stack overflow.
-    let obj = std::thread::Builder::new()
+    let source = input.to_path_buf();
+    let asm = std::thread::Builder::new()
         .stack_size(COMPILER_STACK_SIZE)
-        .spawn(move || codegen::compile(&prog))
+        .spawn(move || backend::emit(&prog, &source))
         .map_err(|e| format!("cannot start the compiler thread: {}", e))?
         .join()
         .map_err(|_| "the compiler thread panicked".to_string())??;
@@ -99,18 +103,43 @@ fn run(input: &Path, output: Option<PathBuf>, compile_only: bool) -> Result<Path
     let stem = input.with_extension("");
     if compile_only {
         let out = output.unwrap_or_else(|| stem.with_extension("o"));
-        std::fs::write(&out, obj).map_err(|e| format!("cannot write {}: {}", out.display(), e))?;
+        // The assembly is assembled into an object file by the system C
+        // compiler.
+        let tmp = std::env::temp_dir().join(format!("tsc-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+        let asm_path = tmp.join("a.s");
+        std::fs::write(&asm_path, &asm).map_err(|e| e.to_string())?;
+        let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+        let mut cmd = std::process::Command::new(&cc);
+        if let Ok(flags) = std::env::var("CFLAGS") {
+            cmd.args(flags.split_whitespace());
+        }
+        let status = cmd
+            .arg("-c")
+            .arg(&asm_path)
+            .arg("-o")
+            .arg(&out)
+            .status()
+            .map_err(|e| format!("failed to run 'cc' (is a C compiler installed?): {}", e))?;
+        let _ = std::fs::remove_dir_all(&tmp);
+        if !status.success() {
+            return Err("the assembler failed".into());
+        }
         return Ok(out);
     }
 
-    // Link the object with the tiny C runtime using the system C compiler.
+    // Assemble and link the program with the tiny C runtime, using the
+    // system C compiler.
     let out = output.unwrap_or(stem);
     let tmp = std::env::temp_dir().join(format!("tsc-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
-    let obj_path = tmp.join("a.o");
+    let asm_path = tmp.join("a.s");
+    if let Ok(dump) = std::env::var("TSC_DUMP_ASM") {
+        let _ = std::fs::write(dump, &asm);
+    }
     let rt_path = tmp.join("runtime.c");
-    std::fs::write(&obj_path, obj).map_err(|e| e.to_string())?;
-    std::fs::write(&rt_path, codegen::RUNTIME_C).map_err(|e| e.to_string())?;
+    std::fs::write(&asm_path, &asm).map_err(|e| e.to_string())?;
+    std::fs::write(&rt_path, backend::runtime::RUNTIME_C).map_err(|e| e.to_string())?;
 
     // `CC` and `CFLAGS` are the conventional way to choose the C compiler and
     // its flags — every build tool honours them, and they are what makes the
@@ -121,7 +150,7 @@ fn run(input: &Path, output: Option<PathBuf>, compile_only: bool) -> Result<Path
         cmd.args(flags.split_whitespace());
     }
     let status = cmd
-        .arg(&obj_path)
+        .arg(&asm_path)
         .arg(&rt_path)
         // The runtime uses libm's `fmod` for the float remainder. On macOS
         // libm is part of libSystem and this flag is a no-op; on Linux it is

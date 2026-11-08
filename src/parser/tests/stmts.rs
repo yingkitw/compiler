@@ -4,7 +4,9 @@ use super::*;
 fn parses_let_with_type_annotation() {
     let prog = parse_src("let x: number = 1;");
     match &prog.stmts[0] {
-        Stmt::Let { name, ty, init, mutable } => {
+        Stmt::Let {
+            name, ty, init, mutable, ..
+        } => {
             assert_eq!(name, "x");
             assert_eq!(ty, &Some(Type::Number));
             assert!(init.is_some());
@@ -93,12 +95,12 @@ fn a_for_loop_desugars_into_its_while() {
     // [the init, a while whose body is [the body, the step]] — the shape the
     // code generator already knows, with nothing new to learn.
     let prog = parse_src("for (let i = 0; i < n; i = i + 1) { print(i); }");
-    let Stmt::Block(stmts) = &prog.stmts[0] else {
+    let Stmt::Block { stmts, .. } = &prog.stmts[0] else {
         panic!("expected a block, got {:?}", prog.stmts[0]);
     };
     assert_eq!(stmts.len(), 2, "block is [init, while]");
     match (&stmts[0], &stmts[1]) {
-        (Stmt::Let { name, .. }, Stmt::While { cond, body }) => {
+        (Stmt::Let { name, .. }, Stmt::While { cond, body, .. }) => {
             assert_eq!(name, "i");
             // The condition survives intact.
             match cond {
@@ -108,7 +110,10 @@ fn a_for_loop_desugars_into_its_while() {
             // The step is appended after the loop body.
             assert_eq!(body.len(), 2, "body is [loop body, step]");
             match &body[1] {
-                Stmt::Expr(Expr::Assign { name, .. }) => assert_eq!(name, "i"),
+                Stmt::Expr {
+                    expr: Expr::Assign { name, .. },
+                    ..
+                } => assert_eq!(name, "i"),
                 other => panic!("expected the step assignment, got {other:?}"),
             }
         }
@@ -122,7 +127,7 @@ fn a_for_loop_without_init_or_step_is_just_the_while() {
     // is `while (true) { x; }`.
     let prog = parse_src("for (;;) { x; }");
     match &prog.stmts[0] {
-        Stmt::While { cond, body } => {
+        Stmt::While { cond, body, .. } => {
             match cond {
                 Expr::Bool(true) => {}
                 other => panic!("expected a true condition, got {other:?}"),
@@ -145,6 +150,29 @@ fn two_for_loops_may_each_declare_the_same_name() {
 }
 
 #[test]
+fn warns_when_an_inner_binding_shadows_an_outer_one() {
+    let prog = parse_src("let x = 1;\n{ let x = 2; }\n");
+    assert!(
+        prog.warnings
+            .iter()
+            .any(|w| w.contains("shadows an outer declaration")),
+        "got warnings: {:?}",
+        prog.warnings
+    );
+}
+
+#[test]
+fn for_of_desugars_into_a_block_with_a_while() {
+    let prog = parse_src("for (const x of a) { print(x); }");
+    match &prog.stmts[0] {
+        Stmt::Block { stmts, .. } => {
+            assert!(stmts.iter().any(|s| matches!(s, Stmt::While { .. })));
+        }
+        other => panic!("expected a block, got {other:?}"),
+    }
+}
+
+#[test]
 fn a_for_loop_rejects_a_missing_semicolon() {
     let err = parse_err("for (let i = 0 i < 3; i = i + 1) { }");
     assert!(
@@ -158,7 +186,7 @@ fn parses_return_with_and_without_value() {
     let prog = parse_src("function f(): number { return 1; }");
     match &prog.stmts[0] {
         Stmt::Func { body, .. } => match &body[0] {
-            Stmt::Return(Some(_)) => {}
+            Stmt::Return { value: Some(_), .. } => {}
             other => panic!("expected a return with a value, got {other:?}"),
         },
         other => panic!("expected a function, got {other:?}"),
@@ -166,7 +194,7 @@ fn parses_return_with_and_without_value() {
     let prog = parse_src("function f(): void { return; }");
     match &prog.stmts[0] {
         Stmt::Func { body, .. } => match &body[0] {
-            Stmt::Return(None) => {}
+            Stmt::Return { value: None, .. } => {}
             other => panic!("expected a bare return, got {other:?}"),
         },
         other => panic!("expected a function, got {other:?}"),
@@ -177,7 +205,10 @@ fn parses_return_with_and_without_value() {
 fn the_decrement_form_desugars_into_a_subtraction() {
     let prog = parse_src("x--;");
     match &prog.stmts[0] {
-        Stmt::Expr(Expr::Assign { value, .. }) => {
+        Stmt::Expr {
+            expr: Expr::Assign { value, .. },
+            ..
+        } => {
             assert!(
                 matches!(&**value, Expr::Bin { op: BinOp::Sub, .. }),
                 "expected a subtraction, got {value:?}"

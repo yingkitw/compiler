@@ -21,6 +21,7 @@ pub(super) fn rewrite_recurrence(
         return;
     };
     let Some(ty) = ret else { return; };
+    let line = body.first().map(Stmt::line).unwrap_or(1);
 
     let used = names_in_use(params, body);
     let width = rec.width as usize;
@@ -82,6 +83,7 @@ pub(super) fn rewrite_recurrence(
             // each costs one call.
             let call_at = |value: i64| Expr::Call {
                 name: name.to_string(),
+                receiver: None,
                 args: {
                     let mut args =
                         vec![Expr::Num(NumLit::new(value as f64, Some(value)))];
@@ -95,6 +97,7 @@ pub(super) fn rewrite_recurrence(
             // lattice's first value is only known at run time.
             let call_at_expr = |value: &Expr, back: usize| Expr::Call {
                 name: name.to_string(),
+                receiver: None,
                 args: {
                     let mut args = vec![Expr::Bin {
                         op: BinOp::Sub,
@@ -149,6 +152,7 @@ pub(super) fn rewrite_recurrence(
                     call_at_expr(&first_expr, back)
                 };
                 out.push(Stmt::Let {
+            line,
                     name: acc.clone(),
                     ty: Some(ty),
                     init: Some(init),
@@ -156,6 +160,7 @@ pub(super) fn rewrite_recurrence(
                 });
             }
             out.push(Stmt::Let {
+            line,
                 name: index.clone(),
                 ty: Some(params[0].1),
                 init: Some(first_expr),
@@ -167,12 +172,14 @@ pub(super) fn rewrite_recurrence(
             // time: each subtraction is one the recursion performs too, so
             // the loop and the recursion visit the same values.
             out.push(Stmt::Let {
+            line,
                 name: base.clone(),
                 ty: Some(Type::Number),
                 init: Some(Expr::Var(p0.clone())),
                 mutable: true,
             });
             out.push(Stmt::While {
+                line,
                 cond: Expr::Bin {
                     op: rec.descent,
                     lhs: Box::new(Expr::Var(base.clone())),
@@ -181,7 +188,9 @@ pub(super) fn rewrite_recurrence(
                         Some(rec.limit),
                     ))),
                 },
-                body: vec![Stmt::Expr(Expr::Assign {
+                body: vec![Stmt::Expr {
+                    line,
+                    expr: Expr::Assign {
                     name: base.clone(),
                     value: Box::new(if stride == 1 {
                         down(Expr::Var(base.clone()))
@@ -194,7 +203,8 @@ pub(super) fn rewrite_recurrence(
                             rhs: Box::new(by(stride as i64)),
                         }
                     }),
-                })],
+                },
+                }],
             });
 
             // The starting values, oldest first, each found by stepping
@@ -203,6 +213,7 @@ pub(super) fn rewrite_recurrence(
             // the recursion's own values, bit for bit.
             let call_below = |steps: usize| Expr::Call {
                 name: name.to_string(),
+                receiver: None,
                 args: {
                     let mut arg = Expr::Var(base.clone());
                     for _ in 0..steps {
@@ -217,6 +228,7 @@ pub(super) fn rewrite_recurrence(
             };
             for (i, acc) in accs.iter().enumerate() {
                 out.push(Stmt::Let {
+            line,
                     name: acc.clone(),
                     ty: Some(ty),
                     init: Some(call_below((count - 1 - i) * stride)),
@@ -228,6 +240,7 @@ pub(super) fn rewrite_recurrence(
             // reaches the base point exactly, and the loop runs exactly as
             // many times as the recursion is deep.
             out.push(Stmt::Let {
+            line,
                 name: index.clone(),
                 ty: Some(Type::Number),
                 init: Some(Expr::Var(p0.clone())),
@@ -239,38 +252,49 @@ pub(super) fn rewrite_recurrence(
 
     // The loop body: compute the next value, shift the window, count on.
     let mut loop_body = vec![Stmt::Let {
+            line,
         name: next.clone(),
         ty: Some(ty),
         init: Some(update),
         mutable: true,
     }];
     for i in 0..count.saturating_sub(1) {
-        loop_body.push(Stmt::Expr(Expr::Assign {
-            name: accs[i].clone(),
-            value: Box::new(Expr::Var(accs[i + 1].clone())),
-        }));
+        loop_body.push(Stmt::Expr {
+            line,
+            expr: Expr::Assign {
+                name: accs[i].clone(),
+                value: Box::new(Expr::Var(accs[i + 1].clone())),
+            },
+        });
     }
-    loop_body.push(Stmt::Expr(Expr::Assign {
-        name: accs[count - 1].clone(),
-        value: Box::new(Expr::Var(next.clone())),
-    }));
+    loop_body.push(Stmt::Expr {
+        line,
+        expr: Expr::Assign {
+            name: accs[count - 1].clone(),
+            value: Box::new(Expr::Var(next.clone())),
+        },
+    });
     match params[0].1 {
         // The `int` lattice is ascending and known: count up to the
         // argument.
         Type::Int => {
-            loop_body.push(Stmt::Expr(Expr::Assign {
-                name: index.clone(),
-                value: Box::new(Expr::Bin {
-                    op: BinOp::Add,
-                    lhs: Box::new(Expr::Var(index.clone())),
-                    rhs: Box::new(if stride == 1 {
-                        one()
-                    } else {
-                        by(stride as i64)
+            loop_body.push(Stmt::Expr {
+                line,
+                expr: Expr::Assign {
+                    name: index.clone(),
+                    value: Box::new(Expr::Bin {
+                        op: BinOp::Add,
+                        lhs: Box::new(Expr::Var(index.clone())),
+                        rhs: Box::new(if stride == 1 {
+                            one()
+                        } else {
+                            by(stride as i64)
+                        }),
                     }),
-                }),
-            }));
+                },
+            });
             out.push(Stmt::While {
+                line,
                 cond: Expr::Bin {
                     op: BinOp::Le,
                     lhs: Box::new(Expr::Var(index.clone())),
@@ -282,19 +306,23 @@ pub(super) fn rewrite_recurrence(
         // The `number` lattice belongs to the argument: the counter comes
         // down from it and stops at the base point the descent found.
         _ => {
-            loop_body.push(Stmt::Expr(Expr::Assign {
-                name: index.clone(),
-                value: Box::new(if stride == 1 {
-                    down(Expr::Var(index.clone()))
-                } else {
-                    Expr::Bin {
-                        op: BinOp::Sub,
-                        lhs: Box::new(Expr::Var(index.clone())),
-                        rhs: Box::new(by(stride as i64)),
-                    }
-                }),
-            }));
+            loop_body.push(Stmt::Expr {
+                line,
+                expr: Expr::Assign {
+                    name: index.clone(),
+                    value: Box::new(if stride == 1 {
+                        down(Expr::Var(index.clone()))
+                    } else {
+                        Expr::Bin {
+                            op: BinOp::Sub,
+                            lhs: Box::new(Expr::Var(index.clone())),
+                            rhs: Box::new(by(stride as i64)),
+                        }
+                    }),
+                },
+            });
             out.push(Stmt::While {
+                line,
                 cond: Expr::Bin {
                     op: BinOp::Gt,
                     lhs: Box::new(Expr::Var(index.clone())),
@@ -304,7 +332,10 @@ pub(super) fn rewrite_recurrence(
             });
         }
     }
-    out.push(Stmt::Return(Some(Expr::Var(accs[count - 1].clone()))));
+    out.push(Stmt::Return {
+        line,
+        value: Some(Expr::Var(accs[count - 1].clone())),
+    });
 
     *body = out;
 }
@@ -336,6 +367,7 @@ fn build_loop_expr(
     match expr {
         Expr::Call {
             name: callee,
+            receiver: None,
             args,
         } if callee == name => {
             let offset = call_offset(args, params)?;
@@ -345,7 +377,7 @@ fn build_loop_expr(
             let slot = slots.accs.len().checked_sub((offset as usize) / slots.stride)?;
             Some(Expr::Var(slots.accs.get(slot)?.clone()))
         }
-        Expr::Num(_) | Expr::Bool(_) => Some(expr.clone()),
+        Expr::Num(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Array(_) => Some(expr.clone()),
         Expr::Var(v) => {
             if v == slots.param {
                 Some(Expr::Var(slots.index.to_string()))
@@ -378,5 +410,7 @@ fn build_loop_expr(
             })
         }
         Expr::Call { .. } | Expr::Assign { .. } => None,
+        Expr::Cond { .. } | Expr::BlockExpr { .. } => None,
+        Expr::Index { .. } | Expr::Member { .. } => None,
     }
 }

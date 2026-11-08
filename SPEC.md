@@ -5,6 +5,9 @@ subset it accepts, the type rules it enforces, and the runtime ABI it produces.
 
 ## CLI
 
+The installed commands are **`tsc`** (primary) and **`tscc`** (same program,
+unambiguous on `PATH` when Microsoft's TypeScript `tsc` is present).
+
 ```
 tsc <input.ts> [-o <output>] [-c]
 ```
@@ -38,6 +41,15 @@ runtime with the sanitizers.
   `CC` names (linking only; `-c` does not need one).
 - The compiler targets the host platform (`Triple::host()`).
 
+**Debug line information**
+
+- Every `Stmt` carries the 1-based source line where it was parsed.
+- Emitted assembly begins with `.file 1 "<input.ts>"` and each translated
+  statement is preceded by `.loc 1 <line> 0`, so `cc -c` produces an object
+  with a DWARF line table mapping machine code to TypeScript source lines.
+- Type-check and codegen errors still have no source locations (parse/lex
+  diagnostics use `line N, column M:`).
+
 ## Language
 
 ### Types
@@ -47,6 +59,8 @@ runtime with the sanitizers.
 | `number` | IEEE-754 double (`f64`) | The default type of a numeric literal |
 | `int` | 64-bit signed integer (`i64`) | Integer division truncates toward zero; arithmetic wraps (there is no overflow check); division by zero or overflow reports `error: integer division by zero or overflow` and exits 1 |
 | `boolean` | 8-bit integer (`i8`), 0 = false, 1 = true | |
+| `string` | pointer + byte length (two pointers in registers) | Literals live in read-only data; `+` concatenates into a bump arena |
+| `number[]` / `boolean[]` | pointer to `{ data, len, cap }` in x0 | Literals and `push` allocate from the bump arena; out-of-range indices abort with a runtime diagnostic |
 | `void` | no value | The return type of a function with no value; not allowed as a variable or parameter type |
 
 A type annotation is optional where the type can be inferred from the
@@ -125,16 +139,14 @@ args         ::= expr ("," expr)* ;
 type         ::= "number" | "int" | "boolean" | "void" ;
 ```
 
-**Operator precedence**, loosest to tightest: assignment → `||` → `&&` →
+**Operator precedence**, loosest to tightest: assignment → `?:` → `||` → `&&` →
 equality → relational → additive → multiplicative (`*`, `/`, `%`) → unary →
 call → primary.
 Assignment is right-associative; all binary operators are left-associative.
 
-**Not supported**: compound logical assignment (`&&=`, `||=`), `? :`,
-`do`,
-`switch`, `break`, `continue`, `throw`, `try`, object literals, array literals,
-string literals, `new`, `typeof`, `instanceof`, `in`, `of`, `delete`, `void`
-operator, generics, classes, modules, arrow functions.
+**Not supported**: `do`, `switch`, `break`, `continue`, `throw`, `try`, `new`,
+`typeof`, `instanceof`, `in`, `delete`, the `void` operator, generics, classes,
+modules, and arrow functions.
 
 The `%` (remainder) operator is supported for `int` and `number` operands. For
 `number` it truncates toward zero and takes the sign of the dividend, like
@@ -144,7 +156,8 @@ JavaScript's `%`.
 
 - **`let` / `const`** — declares a variable in the current block scope. `const`
   bindings cannot be reassigned. Redeclaring a name in the same scope is an
-  error; shadowing in a nested scope is allowed.
+  error; shadowing in a nested scope is allowed but produces a compiler
+  warning (`'x' shadows an outer declaration`).
 - **`function`** — declares a function in the enclosing scope. Functions may be
   called before their declaration appears in the file, and may recurse. Function
   declarations are not allowed nested inside another function body.
@@ -162,14 +175,26 @@ JavaScript's `%`.
   `break` and `continue` do not exist, so nothing in a loop body can target
   the loop rather than the `while` it becomes.
   The condition must be a `boolean` or a `number`.
+- **`for-of`** — `for (let x of iterable)` or `for (const x of iterable)`. The
+  iterable must be a `number[]` or `boolean[]`. Each iteration binds `x` to the
+  next element. It desugars to a hidden array binding, a `length` counter, an
+  index, and a `while (index < length)` whose body declares `x` from
+  `array[index]` then runs the user body and increments the index. `break` and
+  `continue` are not supported.
 - **`return`** — returns from the enclosing function. A `void` function may
   `return;`; a value-returning function must `return <value>;` on every path.
 - **Block** — introduces a new scope.
+- **Block expression** — `{ stmt*; expr; }` in expression position. The
+  statements run in a nested scope; the block's value is the final expression
+  statement (which must be present; an empty block is an error). The value
+  cannot be `void`.
 - **Expression statement** — evaluates an expression and discards the result.
 - **Compound assignment** — `x += e` means `x = x + e`, and likewise `-=`,
-  `*=`, `/=` and `%=`. The target must be a variable, and the result must
-  have the variable's type — the rules are those of the assignment it stands
-  for.
+  `*=`, `/=` and `%=`. Logical `x &&= e` and `x ||= e` mean `x = x && e` and
+  `x = x || e` with the same short-circuit evaluation as `&&` and `||`. The
+  target must be a variable, and the result must have the variable's type — the
+  rules are those of the assignment it stands for (so `&&=` / `||=` require a
+  `boolean` variable, because `&&` and `||` yield `boolean`).
 - **Increment and decrement** — `x++`, `++x`, `x--` and `--x` mean
   `x = x + 1` and `x = x - 1`. They are *statements*, not expressions:
   TypeScript's postfix `x++` yields the old value of `x`, which this subset
@@ -347,8 +372,16 @@ values computed do not change.
   toward zero and takes the sign of the dividend, like JavaScript's `%`.
 - Relational operators (`<`, `<=`, `>`, `>=`) require two `number`s or two
   `int`s, and yield `boolean`.
+- `string` `+` requires two `string` operands and yields `string`; the result
+  is allocated from a program-lifetime bump arena.
 - Equality (`==`, `!=`) requires both operands to have the *same* type
-  (`number`, `int`, or `boolean`) and yields `boolean`.
+  (`number`, `int`, `boolean`, or `string`) and yields `boolean`. For
+  `string`, equality is bytewise on the UTF-8 payload (length must match).
+- The conditional `cond ? then : else` evaluates `cond` (with the same
+  truthiness rules as `if`), then **only one** of `then` and `else`. Both
+  branches must have the same type; mixing `number` and `int` is an error.
+  Nested ternaries associate to the right (`a ? b : c ? d : e` is
+  `a ? b : (c ? d : e)`).
 - `&&`, `||` accept a `boolean`, `number` or `int` operand, yield `boolean`,
   and **short-circuit** — the right operand is not evaluated when the result is
   already determined.
@@ -395,19 +428,23 @@ let c = a + 1;        // 1 is an int here, because `a` is an int
 let d = 1 + a;        // likewise, and the literal is evaluated after `a`
 ```
 
-A literal used as an `int` must be integral and within the `i64` range;
-`let x: int = 4.5` is an error. A negative literal adopts the context the same
-way a positive one does: `let x: int = -5` is an `int`. A `number` variable is
-never implicitly narrowed to an `int` — that would require an explicit
-conversion, which the language does not yet have.
+A literal used as an `int` must be written without a fraction point, be
+integral, and fit in `i64`: `let x: int = 4.5` and `let x: int = 1.0` are
+errors — the lexer treats `1.0` as a `number` literal even when its value is
+integral. Integer syntax without a fitting `i64` (for example
+`-9223372036854775808`) may still be used in an `int` context when the value
+is exact. A negative literal adopts the context the same way a positive one
+does: `let x: int = -5` is an `int`. Mixing `int` and `number` in arithmetic or
+comparison (`a + 1.0` when `a` is `int`, or `a == 1.0`) is a compile error, not
+an implicit conversion.
 
 ### Diagnostics
 
 Lexer and parser diagnostics are single-line messages prefixed with the
-source line:
+source line and column (1-based):
 
 ```
-line 3: expected ';', found Ident("x")
+line 3, column 9: expected ';', found Ident("x")
 ```
 
 Diagnostics produced after parsing — the type errors and the code
@@ -458,15 +495,16 @@ both on stderr with exit status 1, instead of killing the process. Output
 printed before either is preserved. The language has no pointers, so the only
 fault a compiled program can take besides those is a hardware one.
 
-These are imported by the generated code under `Linkage::Import`. `double` maps
-to Cranelift's `F64`, `signed char` to `I8`, and `long long` to `I64`, so the
-ABI matches exactly on every supported platform. `ts_fmod` exists because
-Cranelift has no float remainder instruction; it is C's `fmod`, which
-truncates toward zero and takes the sign of the dividend — JavaScript's `%`.
+These are imported by the generated code as ordinary external symbols. At the C
+ABI, `double` is passed and returned in `v0`/`d0`, booleans in `x0`, and `int` as
+`long long` in `x0`. `ts_fmod` exists because the host has no float remainder
+instruction in the path we emit; it is C's `fmod`, which truncates toward zero
+and takes the sign of the dividend — JavaScript's `%`.
 
 User-declared functions are exported as `tsfn_<name>`; the synthetic top-level
 function is `__ts_start`; the C entry point is `main`. All calls use the
 platform's default calling convention (`CallConv::triple_default`).
 
-Position-independent code is enabled (`is_pic`), so calls to the imported
-runtime functions use PC-relative references and link cleanly on macOS arm64.
+Runtime calls use `bl` to linker-resolved symbols with the platform's usual
+relocation rules, which link cleanly on macOS arm64 and Linux ELF when built
+with `cc`.

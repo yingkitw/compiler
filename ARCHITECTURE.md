@@ -23,21 +23,21 @@ design is the way it is.
                     └───────────┬──────────┘
                                 │  ast::Program
                     ┌───────────▼──────────┐
-                    │      codegen/        │  Program → Cranelift IR
-                    │   (type checks too)   │  → object file bytes
+                    │      backend/        │  Program → assembly text
+                    │   (type checks too)   │  (for the host)
                     └───────────┬──────────┘
-                                │  Vec<u8> (object)
+                                │  assembly text
                     ┌───────────▼──────────┐
-                    │  main.rs (link step)  │  cc obj + runtime.c → binary
+                    │  main.rs (link step)  │  cc a.s + runtime.c → binary
                     └──────────────────────┘
 
                     ┌────────────┐
                     │  ast.rs    │  shared data types: Type, Expr, Stmt
-                    └────────────┘  (depends on nothing; used by parser + codegen)
+                    └────────────┘  (depends on nothing; used by parser + backend)
 ```
 
 **Dependency direction is strictly one-way**: `main` → `lexer` → `parser` →
-`rewrite` → `codegen` → `ast`. `ast.rs` depends on nothing inside the crate.
+`rewrite` → `backend` → `ast`. `ast.rs` depends on nothing inside the crate.
 No cycles, no back-references.
 
 **The three biggest modules are directories**, each split so that no file is
@@ -47,7 +47,7 @@ over about 450 lines:
 |---|---|---|
 | `parser/` | `mod.rs`, `stmt.rs`, `expr.rs`, `tests.rs` | the token helpers and the statement dispatch; the statement forms; one method per precedence level |
 | `rewrite/` | `mod.rs`, `common.rs`, `tail_call/`, `recurrence/` | the entry point and the shared predicates; each rewrite with its own tests; the recurrence split into recognising the shape (`recognize.rs`) and building the loop (`build.rs`) |
-| `codegen/` | `mod.rs`, `ty.rs`, `runtime.rs`, `stmt.rs`, `expr.rs`, `tests.rs` | `compile()` and the function builder; the type lattice; the C shim; statement and expression generation |
+| `backend/` | `mod.rs`, `function.rs`, `expr/`, `stmt.rs`, `runtime.rs`, `tests.rs`, `asm/` | `emit` and the C wrapper; per-function frame; `expr/`; statements; C shim; regressions; `asm/` |
 
 ### `main.rs` — CLI entry point
 - Parses arguments by hand: `-o` / `--output`, `-c` / `--compile-only`,
@@ -58,7 +58,7 @@ over about 450 lines:
   over the AST, and the depth limits decide how deep that may go — the limits
   should be what fires, not the operating system.
 - Reads the source file, then drives the pipeline: `lexer::lex` → `parser::parse`
-  → `codegen::compile`.
+  → `backend::emit`.
 - On success with linking: writes the object and the embedded C runtime to a
   temp directory, invokes `cc <obj> <runtime.c> -o <out>`, and removes the temp
   directory.
@@ -72,8 +72,8 @@ over about 450 lines:
   punctuation. A `NumLit` keeps the literal's exact `i64` value alongside its
   `f64`, because a literal such as 2^53 + 1 does not survive the round trip
   through a double.
-- `Token { tok, line }` carries the source line on every token so parser
-  diagnostics can point at a line.
+- `Token { tok, line, col }` carries 1-based line and column on every token
+  for lexer/parser diagnostics.
 - Handles `//` and `/* */` comments, whitespace, and numeric literals.
 - Knows nothing about types or grammar — it only classifies characters.
 
@@ -81,9 +81,9 @@ over about 450 lines:
 - `Type` (`Number` | `Int` | `Boolean` | `Void`), `BinOp`, `UnOp`, `Expr`,
   `Stmt`, `Program`, and the depth limits the walking stages share.
 - Deliberately has no behaviour and no dependencies: it is the contract between
-  the parser and the codegen.
+  the parser and the code generator.
 - Because both sides pattern-match on these types, **adding a variant requires
-  a parser arm and a codegen arm** — see MEMORY.md → *AST / Parser Sync*.
+  a parser arm and a code generator arm** — see MEMORY.md → *AST / Parser Sync*.
 
 ### `parser/` — recursive-descent parser
 - `parse(tokens: Vec<Token>) -> Result<Program, String>`.
@@ -115,7 +115,7 @@ over about 450 lines:
 ### `rewrite/` — source-to-source optimisations
 - `optimise(prog: &mut Program)` runs every rewrite over the program:
   `tail_call::eliminate_tail_calls` and then `recurrence::eliminate_recurrences`.
-- It runs **between parsing and code generation**, so `codegen/` sees only
+- It runs **between parsing and code generation**, so the backend sees only
   ordinary statements and needs no knowledge of the optimisations.
 - `common.rs` holds what both rewrites share: the predicates ("is this
   expression free of side effects?") and the name helpers ("which names does
@@ -206,28 +206,35 @@ over about 450 lines:
   fibonacci and three for a recurrence with a gap of three — so the base
   expression must have no side effects either.
 
-### `codegen/` — type checking + machine code
-- `compile(program: &Program) -> Result<Vec<u8>, String>` returns the bytes of a
-  relocatable object file.
+### `backend/` — type checking + native code
+- `emit(program: &Program, source: &Path) -> Result<String, String>` returns
+  the program's assembly text (with `.file` / `.loc` for the source path and
+  each statement's `line`), which the system C compiler assembles and links with
+  the runtime.
+- There is no Cranelift and no LLVM: the code generator writes the target's
+  assembly itself, through the `asm` module.
 - Structure:
-  - `mod.rs` — `compile()` sets up the ISA, creates the `ObjectModule`, declares
-    runtime imports, then runs two passes over the function declarations, then
-    emits `__ts_start` and the C `main` wrapper. `define_body()` builds one
-    function: creates the entry block, binds parameters to SSA variables, runs
-    the statement generator, and adds the implicit return if needed.
-  - `ty.rs` — the type lattice: `cl_ty()` maps the language's types onto
-    Cranelift's `F64` / `I8` / `I64`, `sig_for()` builds a function's
-    signature, and `FnSig` / `Slot` are the signature table and a variable's
-    slot.
+  - `mod.rs` — `emit()` collects the functions, then emits each one: the
+    top-level statements become `__ts_start`, the user's functions become
+    `tsfn_<name>`, and a C `main` calls the runtime's setup, the top-level
+    statements and the user's `main`. `Fn` holds the state of one function
+    being written: its assembler, the scopes, the frame's locals and the
+    pool of temporaries.
+  - `expr.rs` and `stmt.rs` — the type rules and the code they emit. Their
+    methods (`gen_expr`, `gen_binop`, `gen_short_circuit`, `gen_call`,
+    `gen_stmt`) do type checking *and* emit instructions in one pass.
+  - `asm/` — the assembler the code is written through: `mod.rs` (the
+    builder, the labels, the branch conditions and the memory operands),
+    `inst.rs` (the instructions) and `reg.rs` (the registers). The operands
+    are types, not text, so a register cannot be written where an immediate
+    belongs — the mistakes the assembler would only report after the program
+    had been compiled become compile errors here.
   - `runtime.rs` — `RUNTIME_C`, the embedded C runtime shim, written to disk at
     link time.
-  - `stmt.rs` and `expr.rs` — `FnGen`, the per-function generator. It holds the
-    `FunctionBuilder`, a `&mut ObjectModule` (needed because
-    `declare_func_in_func` takes `&mut self` in Cranelift 0.136), the function
-    signature table, and the scope stack. Its methods (`gen_stmt`, `gen_expr`,
-    `gen_binop`, `gen_short_circuit`, `gen_call`) do type checking *and* emit
-    instructions in one pass. The two files are two `impl FnGen` blocks: one
-    for the statements, one for the expressions.
+- The value model: every expression leaves its value in a register — `x0`
+  for an `int` or a `boolean`, `d0` for a `number` — and the frame holds
+  what must outlive it: the locals, and a pool of temporaries for the two
+  operands of a binary operation.
 
 ## Data Flow
 
@@ -244,19 +251,19 @@ ast::Program                   Type / Expr / Stmt trees
    │  rewrite::optimise
    ▼
 ast::Program                   tail calls and linear recurrences turned into loops
-   │  codegen::compile
+   │  backend::emit
    ├─ pass 1: collect Stmt::Func → FuncId + signature   (enables recursion
    │                                                        and forward refs)
-   ├─ pass 2: for each function → define_body
-   │            └─ FnGen walks the body:
-   │                 expression → (machine value, static type)
+   ├─ pass 2: for each function → emit_body
+   │            └─ expr::gen_expr / stmt::gen_stmt walk the AST:
+   │                 expression → (register, static type)
    │                 type error → Err(String) → abort
    ├─ __ts_start: top-level statements as a void function
    ├─ main: C-ABI wrapper calling ts_runtime_init, __ts_start, then user
    │        main, returning 0
    ▼
-Object file bytes              Mach-O / ELF, position-independent
-   │  cc <obj> <runtime.c> -o <out>
+assembly text (.s)             typed operands via backend/asm/
+   │  cc <asm> <runtime.c> -o <out>
    ▼
 native binary
 ```
@@ -275,9 +282,9 @@ main (C ABI, returns i32)
 
 ### Type checking
 
-There is no separate checking pass. `FnGen::gen_expr` returns
-`(Option<Value>, Type)` — the emitted machine value (or `None` for `void`) and
-its static type — and every rule is enforced where the value is produced:
+There is no separate checking pass. `expr::gen_expr` returns `(Val, Type)` —
+which register holds the value and its static type — and every rule is
+enforced where the value is produced:
 
 | Rule | Where |
 |---|---|
@@ -288,7 +295,7 @@ its static type — and every rule is enforced where the value is produced:
 | Relational needs numbers | `gen_binop` |
 | Equality needs matching types | `gen_binop` |
 | Argument count and types | `gen_call` |
-| Function returns on all paths | `define_body` |
+| Function returns on all paths | `emit_body` |
 | Undefined variable / function | `lookup` / `gen_call` |
 
 ## Design Decisions
@@ -298,27 +305,28 @@ its static type — and every rule is enforced where the value is produced:
 checking pass over the AST.
 **Why**: a separate pass would duplicate the type lattice and traverse the AST
 twice. The fused version has one source of truth for types.
-**Trade-off**: type errors surface in *codegen order* rather than source order,
+**Trade-off**: type errors surface in *code generation order* rather than source order,
 and the first error aborts compilation. This is acceptable while the language is
 small; if error ordering becomes important (e.g. an IDE-style language server),
 splitting the checker into its own module is the natural refactor.
 
-### Cranelift, not LLVM
-**Decision**: Cranelift as the code generator, via `cranelift-object`.
-**Why**: it is pure Rust — no LLVM installation, no C++ toolchain, no
-`inkwell` binding layer. The dependency tree stays small (five crates) and the
-build is a single `cargo build`.
-**Trade-off**: Cranelift's IR is less flexible than LLVM's for aggressive
-optimisation, and its API changes between releases (see MEMORY.md → *Cranelift
-0.136 API Differences*).
+### Assembly text + the system C compiler, not an embedded codegen IR
+**Decision**: the `backend/` emits host assembly through `asm/`, then `cc`
+assembles and links it with the embedded C runtime.
+**Why**: the compiler crate has **no third-party dependencies**; the only
+platform-specific piece is the assembly syntax the `asm` module writes and the
+`cc` invocation in `main.rs`. Type checking stays fused with emission in
+`expr.rs` / `stmt.rs`.
+**Trade-off**: optimisations are whatever the system assembler and linker
+provide; there is no SSA-level optimiser in the compiler itself.
 
 ### A fixed-arity C runtime shim instead of calling `printf`
 **Decision**: the generated code imports `ts_print_number(double)`,
 `ts_print_bool(signed char)`, `ts_print_int(long long)`, `ts_runtime_init(void)`
 and `ts_fmod(double, double)`, all defined in a small C file linked alongside
 the object.
-**Why**: `printf` is variadic, and calling a variadic function from Cranelift
-requires setting the vector-register count for the SysV ABI — fragile and
+**Why**: `printf` is variadic, and calling it from generated code requires
+care with the platform's vector-argument count — fragile and
 platform-specific. Fixed-arity functions have an unambiguous ABI.
 **Trade-off**: the runtime must be written in C and linked with `cc`, so a C
 compiler is required. The alternative — emitting the print logic in Cranelift
@@ -342,11 +350,11 @@ behaviour change, but the old value was lossy.
 
 ### A rewrite pass between parsing and code generation
 **Decision**: `rewrite/` is a separate pass that runs on the AST between
-`parser::parse` and `codegen::compile`, rather than an optimisation inside
+`parser::parse` and `backend::emit`, rather than an optimisation inside
 the code generator.
 **Why**: the code generator is the largest and most delicate module in the
 project, and an optimisation does not belong in the middle of it. Keeping the
-rewrite on the AST means `codegen/` needs no knowledge of it at all, and
+rewrite on the AST means the backend needs no knowledge of it at all, and
 the rewrite can be tested on its own — by inspecting the AST it produces.
 **Trade-off**: the compiler has one more stage, and the rewrite can only use
 what the AST knows. In particular it cannot see types, so it has to be
@@ -357,7 +365,8 @@ see is self-recursive, in tail position, with a decreasing argument.
 **Decision**: a C-style `for` loop is rewritten *while parsing* into a block
 containing the init and a `while` whose body is the loop body followed by the
 step. There is no `Stmt::For`.
-**Why**: adding an AST variant forces a parser arm *and* a codegen arm (see
+**Why**: adding an AST variant forces a parser arm *and* a code generator
+arm (see
 MEMORY.md → *AST / Parser Sync*), and the language already has the loop the
 `for` abbreviates. Desugaring in the parser gives the feature with zero
 changes to the AST, the rewrites, or the code generator — and the rewrites
@@ -371,7 +380,7 @@ statement of the desugared body is what makes `continue` correct if loops
 ever grow one.
 
 ### The three biggest modules are directories
-**Decision**: `parser/`, `rewrite/` and `codegen/` are directories of files
+**Decision**: `parser/`, `rewrite/` and `backend/` are directories of files
 rather than single files, and no file is over about 450 lines.
 **Why**: a 1,400-line file is hard to read, hard to review, and hard to
 change safely. The split is along the seams the modules already had — the
@@ -380,7 +389,7 @@ the runtime shim and the two halves of the code generator — so no new
 abstraction was introduced and no behaviour changed.
 **Trade-off**: a directory module needs `mod.rs` (or a `foo/mod.rs`), the
 methods that cross a file boundary need `pub(super)`, and the tests move into
-their own file. The Mature Module Policy applies here too: `codegen/` was
+their own file. The Mature Module Policy applies here too: the backend was
 covered by 46 unit tests before the split, and the split is a *move*, so the
 tests are what proves it changed nothing.
 
@@ -466,14 +475,15 @@ present on any machine that can build Rust projects and handles the object
 format, symbol resolution, and the C runtime in one step.
 **Trade-off**: `cc` must be on `PATH`.
 
-### Position-independent code is always on
-**Decision**: set `is_pic` unconditionally.
-**Why**: without it, Cranelift emits absolute address references to imported
-symbols, which Mach-O rejects with "Illegal text-relocations" — a hard link
-failure on macOS arm64 that does not reproduce on Linux ELF. Enabling PIC
-unconditionally is simpler than detecting the platform.
-**Trade-off**: a small performance cost on targets where it is not strictly
-required.
+### External calls use platform linkage names
+**Decision**: runtime and `bl` targets use `Fn::symbol`, which prefixes `_` on
+Mach-O and not on ELF, and every runtime entry is a normal externally linked C
+function.
+**Why**: the generated `.s` is assembled by the system `cc`, which applies the
+platform's relocation rules. Keeping calls at the C ABI layer avoids fighting
+the assembler over GOT/PLT details in handwritten instructions.
+**Trade-off**: the backend must match the host calling convention (AAPCS64 on
+macOS arm64 today).
 
 ### Two numeric types: `number` and `int`
 **Decision**: `number` is an IEEE-754 double and `int` is a 64-bit signed
@@ -487,8 +497,8 @@ resolve. Integer arithmetic wraps — there is no overflow check — and integer
 division by zero is a runtime error reported by the runtime's signal handler.
 
 ### Casts are real conversions, and saturating ones
-**Decision**: `x as int` and `x as number` emit real conversion instructions
-(`fcvt_to_sint_sat` / `fcvt_from_sint`), and the awkward inputs are *defined*:
+**Decision**: `x as int` and `x as number` emit real conversions (`ts_double_to_int`
+for saturation / `scvtf` for widening), and the awkward inputs are *defined*:
 `NaN` casts to `0`, and an out-of-range `number` saturates to the ends of the
 `i64` range — Rust's `as` semantics.
 **Why**: TypeScript's `as` is erased at compile time because its types share
@@ -506,7 +516,7 @@ also *value* semantics, deliberately distinct from a literal's adaptation:
 variable rather than eager evaluation plus masking.
 **Why**: eager evaluation would evaluate the right-hand side even when the
 result is already determined, so `false && (1/0 > 0)` would trap.
-**Trade-off**: more complex codegen than a bitwise `and`/`or`.
+**Trade-off**: more complex code generation than a bitwise `and`/`or`.
 
 ### Synthetic `__ts_start` plus a C `main` wrapper
 **Decision**: top-level statements compile to a synthetic `void` function; a

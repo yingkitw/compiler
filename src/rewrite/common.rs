@@ -30,11 +30,26 @@ pub(crate) fn is_pure_at(expr: &Expr, depth: usize) -> bool {
         return false;
     }
     match expr {
-        Expr::Num(_) | Expr::Bool(_) | Expr::Var(_) => true,
+        Expr::Num(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Var(_) => true,
+        Expr::Array(elems) => elems.iter().all(|e| is_pure_at(e, depth + 1)),
+        Expr::Index { base, index } => {
+            is_pure_at(base, depth + 1) && is_pure_at(index, depth + 1)
+        }
+        Expr::Member { base, .. } => is_pure_at(base, depth + 1),
         Expr::Bin { lhs, rhs, .. } => is_pure_at(lhs, depth + 1) && is_pure_at(rhs, depth + 1),
         Expr::Un { expr, .. } => is_pure_at(expr, depth + 1),
         // A cast is a pure conversion: it writes nothing and calls nothing.
         Expr::Cast { expr, .. } => is_pure_at(expr, depth + 1),
+        Expr::Cond {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            is_pure_at(cond, depth + 1)
+                && is_pure_at(then_expr, depth + 1)
+                && is_pure_at(else_expr, depth + 1)
+        }
+        Expr::BlockExpr { .. } => false,
         Expr::Call { .. } => false,
         Expr::Assign { .. } => false,
     }
@@ -53,13 +68,37 @@ pub(crate) fn contains_assign_at(expr: &Expr, depth: usize) -> bool {
         return true;
     }
     match expr {
-        Expr::Num(_) | Expr::Bool(_) | Expr::Var(_) => false,
+        Expr::Num(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Var(_) | Expr::Array(_) => false,
+        Expr::Index { base, index } => {
+            contains_assign_at(base, depth + 1) || contains_assign_at(index, depth + 1)
+        }
+        Expr::Member { base, .. } => contains_assign_at(base, depth + 1),
         Expr::Bin { lhs, rhs, .. } => {
             contains_assign_at(lhs, depth + 1) || contains_assign_at(rhs, depth + 1)
         }
         Expr::Un { expr, .. } => contains_assign_at(expr, depth + 1),
         Expr::Cast { expr, .. } => contains_assign_at(expr, depth + 1),
-        Expr::Call { args, .. } => args.iter().any(|a| contains_assign_at(a, depth + 1)),
+        Expr::Cond {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            contains_assign_at(cond, depth + 1)
+                || contains_assign_at(then_expr, depth + 1)
+                || contains_assign_at(else_expr, depth + 1)
+        }
+        Expr::BlockExpr { stmts, value } => {
+            contains_assign_at(value, depth + 1)
+                || stmts.iter().any(|s| {
+                    matches!(s, Stmt::Expr { expr: e, .. } if contains_assign_at(e, depth + 1))
+                })
+        }
+        Expr::Call { receiver, args, .. } => {
+            receiver
+                .as_ref()
+                .is_some_and(|r| contains_assign_at(r, depth + 1))
+                || args.iter().any(|a| contains_assign_at(a, depth + 1))
+        }
         Expr::Assign { .. } => true,
     }
 }
@@ -77,16 +116,38 @@ pub(crate) fn contains_call_to_at(expr: &Expr, name: &str, depth: usize) -> bool
         return true;
     }
     match expr {
-        Expr::Num(_) | Expr::Bool(_) | Expr::Var(_) => false,
+        Expr::Num(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Var(_) | Expr::Array(_) => false,
+        Expr::Index { base, index } => {
+            contains_call_to_at(base, name, depth + 1)
+                || contains_call_to_at(index, name, depth + 1)
+        }
+        Expr::Member { base, .. } => contains_call_to_at(base, name, depth + 1),
         Expr::Bin { lhs, rhs, .. } => {
             contains_call_to_at(lhs, name, depth + 1) || contains_call_to_at(rhs, name, depth + 1)
         }
         Expr::Un { expr, .. } => contains_call_to_at(expr, name, depth + 1),
         Expr::Cast { expr, .. } => contains_call_to_at(expr, name, depth + 1),
+        Expr::Cond {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            contains_call_to_at(cond, name, depth + 1)
+                || contains_call_to_at(then_expr, name, depth + 1)
+                || contains_call_to_at(else_expr, name, depth + 1)
+        }
+        Expr::BlockExpr { value, .. } => contains_call_to_at(value, name, depth + 1),
         Expr::Call {
             name: callee,
+            receiver,
             args,
-        } => callee == name || args.iter().any(|a| contains_call_to_at(a, name, depth + 1)),
+        } => {
+            callee == name
+                || receiver
+                    .as_ref()
+                    .is_some_and(|r| contains_call_to_at(r, name, depth + 1))
+                || args.iter().any(|a| contains_call_to_at(a, name, depth + 1))
+        }
         Expr::Assign { value, .. } => contains_call_to_at(value, name, depth + 1),
     }
 }
@@ -126,26 +187,29 @@ pub(crate) fn collect_stmt_names_at(stmt: &Stmt, out: &mut Vec<String>, depth: u
             cond,
             then,
             els,
+            ..
         } => {
             collect_expr_names_at(cond, out, depth + 1);
             for stmt in then.iter().chain(els.iter()) {
                 collect_stmt_names_at(stmt, out, depth + 1);
             }
         }
-        Stmt::While { cond, body } => {
+        Stmt::While { cond, body, .. } => {
             collect_expr_names_at(cond, out, depth + 1);
             for stmt in body {
                 collect_stmt_names_at(stmt, out, depth + 1);
             }
         }
-        Stmt::Block(stmts) => {
+        Stmt::Block { stmts, .. } => {
             for stmt in stmts {
                 collect_stmt_names_at(stmt, out, depth + 1);
             }
         }
-        Stmt::Return(Some(expr)) => collect_expr_names_at(expr, out, depth + 1),
-        Stmt::Return(None) => {}
-        Stmt::Expr(expr) => collect_expr_names_at(expr, out, depth + 1),
+        Stmt::Return { value: Some(expr), .. } => {
+            collect_expr_names_at(expr, out, depth + 1)
+        }
+        Stmt::Return { value: None, .. } => {}
+        Stmt::Expr { expr, .. } => collect_expr_names_at(expr, out, depth + 1),
     }
 }
 
@@ -154,7 +218,7 @@ pub(crate) fn collect_expr_names_at(expr: &Expr, out: &mut Vec<String>, depth: u
         return;
     }
     match expr {
-        Expr::Num(_) | Expr::Bool(_) => {}
+        Expr::Num(_) | Expr::Bool(_) | Expr::Str(_) => {}
         Expr::Var(name) => out.push(name.clone()),
         Expr::Assign { name, value } => {
             out.push(name.clone());
@@ -166,8 +230,39 @@ pub(crate) fn collect_expr_names_at(expr: &Expr, out: &mut Vec<String>, depth: u
         }
         Expr::Un { expr, .. } => collect_expr_names_at(expr, out, depth + 1),
         Expr::Cast { expr, .. } => collect_expr_names_at(expr, out, depth + 1),
-        Expr::Call { name, args } => {
+        Expr::Cond {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            collect_expr_names_at(cond, out, depth + 1);
+            collect_expr_names_at(then_expr, out, depth + 1);
+            collect_expr_names_at(else_expr, out, depth + 1);
+        }
+        Expr::BlockExpr { stmts, value } => {
+            for s in stmts {
+                collect_stmt_names_at(s, out, depth + 1);
+            }
+            collect_expr_names_at(value, out, depth + 1);
+        }
+        Expr::Array(elems) => {
+            for e in elems {
+                collect_expr_names_at(e, out, depth + 1);
+            }
+        }
+        Expr::Index { base, index } => {
+            collect_expr_names_at(base, out, depth + 1);
+            collect_expr_names_at(index, out, depth + 1);
+        }
+        Expr::Member { base, name } => {
+            collect_expr_names_at(base, out, depth + 1);
             out.push(name.clone());
+        }
+        Expr::Call { name, receiver, args } => {
+            out.push(name.clone());
+            if let Some(rcv) = receiver {
+                collect_expr_names_at(rcv, out, depth + 1);
+            }
             for arg in args {
                 collect_expr_names_at(arg, out, depth + 1);
             }

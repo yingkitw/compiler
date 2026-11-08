@@ -72,6 +72,7 @@ pub fn eliminate_tail_calls(prog: &mut Program) {
             params,
             ret,
             body,
+            ..
         } = stmt
         {
             rewrite_func(name, params, *ret, body);
@@ -154,6 +155,7 @@ fn rewrite_func(name: &str, params: &[(String, Type)], ret: Option<Type>, body: 
     // The accumulator must not collide with a name the program already uses.
     let acc_name = fresh_name(ACC_NAME, &names_in_use(params, body));
 
+    let line = body.first().map(Stmt::line).unwrap_or(1);
     let mut out: Vec<Stmt> = Vec::new();
 
     if let Some(t) = acc_type {
@@ -163,6 +165,7 @@ fn rewrite_func(name: &str, params: &[(String, Type)], ret: Option<Type>, body: 
             _ => Expr::Num(NumLit::new(op.identity(), None)),
         };
         out.push(Stmt::Let {
+            line,
             name: acc_name.clone(),
             ty: acc_type,
             init: Some(init),
@@ -174,14 +177,17 @@ fn rewrite_func(name: &str, params: &[(String, Type)], ret: Option<Type>, body: 
     if let Some((op, expr)) = &call.acc {
         // The accumulator term is evaluated with the *current* parameter
         // values, before they are decremented.
-        loop_body.push(Stmt::Expr(Expr::Assign {
-            name: acc_name.clone(),
-            value: Box::new(Expr::Bin {
-                op: op.accumulate(),
-                lhs: Box::new(Expr::Var(acc_name.clone())),
-                rhs: Box::new(expr.clone()),
-            }),
-        }));
+        loop_body.push(Stmt::Expr {
+            line,
+            expr: Expr::Assign {
+                name: acc_name.clone(),
+                value: Box::new(Expr::Bin {
+                    op: op.accumulate(),
+                    lhs: Box::new(Expr::Var(acc_name.clone())),
+                    rhs: Box::new(expr.clone()),
+                }),
+            },
+        });
     }
     for (index, amount) in &call.steps {
         if *amount == 0 {
@@ -194,20 +200,24 @@ fn rewrite_func(name: &str, params: &[(String, Type)], ret: Option<Type>, body: 
         } else {
             (BinOp::Add, -*amount)
         };
-        loop_body.push(Stmt::Expr(Expr::Assign {
-            name: pname.clone(),
-            value: Box::new(Expr::Bin {
-                op,
-                lhs: Box::new(Expr::Var(pname.clone())),
-                rhs: Box::new(Expr::Num(NumLit::new(
-                    magnitude as f64,
-                    Some(magnitude),
-                ))),
-            }),
-        }));
+        loop_body.push(Stmt::Expr {
+            line,
+            expr: Expr::Assign {
+                name: pname.clone(),
+                value: Box::new(Expr::Bin {
+                    op,
+                    lhs: Box::new(Expr::Var(pname.clone())),
+                    rhs: Box::new(Expr::Num(NumLit::new(
+                        magnitude as f64,
+                        Some(magnitude),
+                    ))),
+                }),
+            },
+        });
     }
 
     out.push(Stmt::While {
+        line,
         cond: call.loop_cond,
         body: loop_body,
     });
@@ -215,12 +225,18 @@ fn rewrite_func(name: &str, params: &[(String, Type)], ret: Option<Type>, body: 
     // The base case's value: either the base expression on its own, or the
     // base expression combined with the accumulator.
     match (&call.base, &call.acc) {
-        (Some(base), None) => out.push(Stmt::Return(Some(base.clone()))),
-        (Some(base), Some((op, _))) => out.push(Stmt::Return(Some(Expr::Bin {
-            op: op.combine(),
-            lhs: Box::new(base.clone()),
-            rhs: Box::new(Expr::Var(acc_name)),
-        }))),
+        (Some(base), None) => out.push(Stmt::Return {
+            line,
+            value: Some(base.clone()),
+        }),
+        (Some(base), Some((op, _))) => out.push(Stmt::Return {
+            line,
+            value: Some(Expr::Bin {
+                op: op.combine(),
+                lhs: Box::new(base.clone()),
+                rhs: Box::new(Expr::Var(acc_name)),
+            }),
+        }),
         (None, _) => {}
     }
 
@@ -245,6 +261,7 @@ fn match_tail_call(
         cond,
         then,
         els,
+        ..
     } = &body[0]
     else {
         return None;
@@ -252,7 +269,11 @@ fn match_tail_call(
     if !els.is_empty() || then.len() != 1 {
         return None;
     }
-    let Stmt::Return(base_ret) = &then[0] else {
+    let Stmt::Return {
+        value: base_ret,
+        ..
+    } = &then[0]
+    else {
         return None;
     };
 
@@ -264,7 +285,11 @@ fn match_tail_call(
         // Value-returning: the return is the only statement after the base
         // case, and the function returns a value.
         (Some(base), Some(rt)) if rt != Type::Void => {
-            let [Stmt::Return(Some(tail))] = rest else {
+            let [Stmt::Return {
+                value: Some(tail),
+                ..
+            }] = rest
+            else {
                 return None;
             };
             let (args, acc) = split_tail(tail, name)?;
@@ -274,10 +299,15 @@ fn match_tail_call(
         // every level.
         (None, rt) if rt.is_none() || rt == Some(Type::Void) => {
             let (last, mid) = rest.split_last()?;
-            let Stmt::Expr(Expr::Call {
-                name: callee,
-                args,
-            }) = last
+            let Stmt::Expr {
+                expr:
+                    Expr::Call {
+                        name: callee,
+                        receiver: None,
+                        args,
+                    },
+                ..
+            } = last
             else {
                 return None;
             };
@@ -333,16 +363,19 @@ fn split_tail(tail: &Expr, name: &str) -> Option<SplitTail> {
     match tail {
         Expr::Call {
             name: callee,
+            receiver: None,
             args,
         } if callee == name => Some((args.clone(), None)),
         Expr::Bin { op, lhs, rhs } => {
             let (op, args, other, call_on_left) = match (&**lhs, &**rhs) {
                 (Expr::Call {
                     name: callee,
+                    receiver: None,
                     args,
                 }, _) if callee == name => (*op, args.clone(), (**rhs).clone(), true),
                 (_, Expr::Call {
                     name: callee,
+                    receiver: None,
                     args,
                 }) if callee == name => (*op, args.clone(), (**lhs).clone(), false),
                 _ => return None,
@@ -431,10 +464,15 @@ fn negate_condition(cond: &Expr, param: &str) -> Option<Expr> {
 /// original assigns in a fresh frame per level, the rewrite in one).
 fn is_per_level_safe(stmt: &Stmt, name: &str) -> bool {
     match stmt {
-        Stmt::Expr(Expr::Call {
-            name: callee,
-            args,
-        }) => {
+        Stmt::Expr {
+            expr:
+                Expr::Call {
+                    name: callee,
+                    receiver: None,
+                    args,
+                },
+            ..
+        } => {
             callee != name
                 && args
                     .iter()

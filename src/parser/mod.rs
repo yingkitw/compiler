@@ -1,7 +1,9 @@
 //! Recursive-descent parser for the TypeScript subset.
 
+use std::collections::HashSet;
+
 use crate::ast::*;
-use crate::lexer::{Tok, Token};
+use crate::lexer::{source_loc, Tok, Token};
 
 pub fn parse(toks: Vec<Token>) -> Result<Program, String> {
     let mut p = Parser {
@@ -9,12 +11,17 @@ pub fn parse(toks: Vec<Token>) -> Result<Program, String> {
         pos: 0,
         nesting: 0,
         depth: 0,
+        scopes: vec![HashSet::new()],
+        warnings: Vec::new(),
     };
     let mut stmts = Vec::new();
     while *p.peek() != Tok::Eof {
         stmts.push(p.stmt()?);
     }
-    Ok(Program { stmts })
+    Ok(Program {
+        stmts,
+        warnings: p.warnings,
+    })
 }
 
 struct Parser {
@@ -32,9 +39,54 @@ struct Parser {
     /// and the tree's own destructor — recurses over it, so its depth has to
     /// be bounded.
     depth: usize,
+    /// Names in scope, innermost last — used for shadowing warnings.
+    scopes: Vec<HashSet<String>>,
+    warnings: Vec<String>,
 }
 
 impl Parser {
+    pub(super) fn push_bind_scope(&mut self) {
+        self.scopes.push(HashSet::new());
+    }
+
+    pub(super) fn pop_bind_scope(&mut self) {
+        self.scopes.pop();
+    }
+
+    /// Record a binding: same-scope redeclaration is an error; hiding an
+    /// outer name is a warning.
+    pub(super) fn bind_name(&mut self, name: &str, line: u32, col: u32) -> Result<(), String> {
+        if self
+            .scopes
+            .last()
+            .expect("a scope is open")
+            .contains(name)
+        {
+            return Err(format!(
+                "{}: '{name}' is already declared in this scope",
+                source_loc(line, col)
+            ));
+        }
+        let shadows = self
+            .scopes
+            .iter()
+            .rev()
+            .skip(1)
+            .any(|outer| outer.contains(name));
+        if shadows {
+            self.warnings.push(format!(
+                "{}: '{name}' shadows an outer declaration",
+                source_loc(line, col)
+            ));
+        }
+        self.scopes
+            .last_mut()
+            .expect("a scope is open")
+            .insert(name.to_string());
+        Ok(())
+    }
+
+
     /// Enter a nested expression or statement.
     ///
     /// The parser recurses, so a program with a hundred thousand nested
@@ -78,6 +130,19 @@ impl Parser {
         self.toks[self.pos].line
     }
 
+    fn col(&self) -> u32 {
+        self.toks[self.pos].col
+    }
+
+    fn loc(&self) -> String {
+        format!("{}:", source_loc(self.line(), self.col()))
+    }
+
+    pub(super) fn prev_span(&self) -> (u32, u32) {
+        let i = self.pos.saturating_sub(1);
+        (self.toks[i].line, self.toks[i].col)
+    }
+
     fn bump(&mut self) -> Tok {
         let t = self.toks[self.pos].tok.clone();
         if self.pos + 1 < self.toks.len() {
@@ -100,8 +165,8 @@ impl Parser {
             Ok(())
         } else {
             Err(format!(
-                "line {}: expected {}, found {:?}",
-                self.line(),
+                "{}: expected {}, found {:?}",
+                source_loc(self.line(), self.col()),
                 what,
                 self.peek()
             ))
@@ -115,8 +180,8 @@ impl Parser {
                 Ok(name)
             }
             other => Err(format!(
-                "line {}: expected {}, found {:?}",
-                self.line(),
+                "{}: expected {}, found {:?}",
+                source_loc(self.line(), self.col()),
                 what,
                 other
             )),

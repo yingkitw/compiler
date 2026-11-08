@@ -12,11 +12,13 @@ pub enum Tok {
     While,
     For,
     As,
+    Of,
     Return,
     True,
     False,
     Ident(String),
     Num(NumLit),
+    Str(String),
     LParen,
     RParen,
     LBrace,
@@ -24,6 +26,9 @@ pub enum Tok {
     Semi,
     Comma,
     Colon,
+    Dot,
+    LBracket,
+    RBracket,
     Assign,
     Plus,
     Minus,
@@ -36,6 +41,9 @@ pub enum Tok {
     StarEq,
     SlashEq,
     PercentEq,
+    /// `&&=` and `||=` — logical compound assignment.
+    AndEq,
+    OrEq,
     /// `++` and `--` — the increment and decrement operators.
     PlusPlus,
     MinusMinus,
@@ -48,6 +56,7 @@ pub enum Tok {
     AndAnd,
     OrOr,
     Bang,
+    Question,
     Eof,
 }
 
@@ -55,6 +64,28 @@ pub enum Tok {
 pub struct Token {
     pub tok: Tok,
     pub line: u32,
+    /// 1-based column on `line` where the token starts.
+    pub col: u32,
+}
+
+/// Prefix for parse/lex diagnostics (`line 3, column 5:`).
+pub fn source_loc(line: u32, col: u32) -> String {
+    format!("line {line}, column {col}")
+}
+
+fn advance_char(line: &mut u32, col: &mut u32, c: char) {
+    if c == '\n' {
+        *line += 1;
+        *col = 1;
+    } else {
+        *col += 1;
+    }
+}
+
+fn advance_run(line: &mut u32, col: &mut u32, chars: &[char], start: usize, end: usize) {
+    for &c in &chars[start..end] {
+        advance_char(line, col, c);
+    }
 }
 
 /// The operator tokens: one character, or two when they are written with an
@@ -86,7 +117,13 @@ fn operator(chars: &[char], i: usize) -> Option<(Tok, usize)> {
         '<' => Some((Tok::Lt, 1)),
         '>' if chars.get(i + 1) == Some(&'=') => Some((Tok::GtEq, 2)),
         '>' => Some((Tok::Gt, 1)),
+        '&' if chars.get(i + 1) == Some(&'&') && chars.get(i + 2) == Some(&'=') => {
+            Some((Tok::AndEq, 3))
+        }
         '&' if chars.get(i + 1) == Some(&'&') => Some((Tok::AndAnd, 2)),
+        '|' if chars.get(i + 1) == Some(&'|') && chars.get(i + 2) == Some(&'=') => {
+            Some((Tok::OrEq, 3))
+        }
         '|' if chars.get(i + 1) == Some(&'|') => Some((Tok::OrOr, 2)),
         _ => None,
     }
@@ -97,32 +134,38 @@ pub fn lex(src: &str) -> Result<Vec<Token>, String> {
     let mut out = Vec::new();
     let mut i = 0;
     let mut line = 1u32;
+    let mut col = 1u32;
 
     macro_rules! err {
-        ($($arg:tt)*) => { return Err(format!("line {}: {}", line, format!($($arg)*))) };
+        ($($arg:tt)*) => {
+            return Err(format!("{}: {}", source_loc(line, col), format!($($arg)*)))
+        };
     }
 
     while i < chars.len() {
         let c = chars[i];
         match c {
             '\n' => {
-                line += 1;
+                advance_char(&mut line, &mut col, c);
                 i += 1;
             }
-            c if c.is_whitespace() => i += 1,
+            c if c.is_whitespace() => {
+                advance_char(&mut line, &mut col, c);
+                i += 1;
+            }
             '/' if chars.get(i + 1) == Some(&'/') => {
+                let start = i;
                 while i < chars.len() && chars[i] != '\n' {
                     i += 1;
                 }
+                advance_run(&mut line, &mut col, &chars, start, i);
             }
             '/' if chars.get(i + 1) == Some(&'*') => {
+                let start = i;
                 i += 2;
                 loop {
                     if i >= chars.len() {
                         err!("unterminated block comment");
-                    }
-                    if chars[i] == '\n' {
-                        line += 1;
                     }
                     if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
                         i += 2;
@@ -130,12 +173,16 @@ pub fn lex(src: &str) -> Result<Vec<Token>, String> {
                     }
                     i += 1;
                 }
+                advance_run(&mut line, &mut col, &chars, start, i);
             }
             c if c.is_ascii_alphabetic() || c == '_' || c == '$' => {
+                let tline = line;
+                let tcol = col;
                 let start = i;
                 while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_' || chars[i] == '$') {
                     i += 1;
                 }
+                advance_run(&mut line, &mut col, &chars, start, i);
                 let word: String = chars[start..i].iter().collect();
                 let tok = match word.as_str() {
                     "let" => Tok::Let,
@@ -146,59 +193,183 @@ pub fn lex(src: &str) -> Result<Vec<Token>, String> {
                     "while" => Tok::While,
                     "for" => Tok::For,
                     "as" => Tok::As,
+                    "of" => Tok::Of,
                     "return" => Tok::Return,
                     "true" => Tok::True,
                     "false" => Tok::False,
                     _ => Tok::Ident(word),
                 };
-                out.push(Token { tok, line });
+                out.push(Token {
+                    tok,
+                    line: tline,
+                    col: tcol,
+                });
+            }
+            '"' => {
+                let tline = line;
+                let tcol = col;
+                let start = i;
+                i += 1;
+                let mut bytes = String::new();
+                while i < chars.len() {
+                    match chars[i] {
+                        '"' => {
+                            i += 1;
+                            break;
+                        }
+                        '\\' => {
+                            i += 1;
+                            if i >= chars.len() {
+                                err!("unterminated string literal");
+                            }
+                            match chars[i] {
+                                '"' => bytes.push('"'),
+                                '\\' => bytes.push('\\'),
+                                'n' => bytes.push('\n'),
+                                't' => bytes.push('\t'),
+                                other => err!("unknown escape \\{}", other),
+                            }
+                            i += 1;
+                        }
+                        '\n' => err!("unterminated string literal"),
+                        ch => {
+                            bytes.push(ch);
+                            i += 1;
+                        }
+                    }
+                }
+                advance_run(&mut line, &mut col, &chars, start, i);
+                out.push(Token {
+                    tok: Tok::Str(bytes),
+                    line: tline,
+                    col: tcol,
+                });
             }
             c if c.is_ascii_digit() => {
+                let tline = line;
+                let tcol = col;
                 let start = i;
                 while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
                     i += 1;
                 }
+                advance_run(&mut line, &mut col, &chars, start, i);
                 let text: String = chars[start..i].iter().collect();
                 // Parse the exact integer first when the literal is written as a
                 // plain integer: a large literal such as 9007199254740993 is
                 // not representable as an f64, and rounding it here would
                 // change the number before the compiler ever sees it.
-                let int = if text.contains('.') {
+                let fraction_point = text.contains('.');
+                let int = if fraction_point {
                     None
                 } else {
                     text.parse::<i64>().ok()
                 };
                 match text.parse::<f64>() {
-                    Ok(value) => out.push(Token { tok: Tok::Num(NumLit::new(value, int)), line }),
+                    Ok(value) => out.push(Token {
+                        tok: Tok::Num(NumLit::from_source(value, int, fraction_point)),
+                        line: tline,
+                        col: tcol,
+                    }),
                     Err(_) => err!("invalid number literal '{}'", text),
                 }
             }
             '(' => {
-                out.push(Token { tok: Tok::LParen, line });
+                out.push(Token {
+                    tok: Tok::LParen,
+                    line,
+                    col,
+                });
+                advance_char(&mut line, &mut col, c);
                 i += 1;
             }
             ')' => {
-                out.push(Token { tok: Tok::RParen, line });
+                out.push(Token {
+                    tok: Tok::RParen,
+                    line,
+                    col,
+                });
+                advance_char(&mut line, &mut col, c);
                 i += 1;
             }
             '{' => {
-                out.push(Token { tok: Tok::LBrace, line });
+                out.push(Token {
+                    tok: Tok::LBrace,
+                    line,
+                    col,
+                });
+                advance_char(&mut line, &mut col, c);
                 i += 1;
             }
             '}' => {
-                out.push(Token { tok: Tok::RBrace, line });
+                out.push(Token {
+                    tok: Tok::RBrace,
+                    line,
+                    col,
+                });
+                advance_char(&mut line, &mut col, c);
                 i += 1;
             }
             ';' => {
-                out.push(Token { tok: Tok::Semi, line });
+                out.push(Token {
+                    tok: Tok::Semi,
+                    line,
+                    col,
+                });
+                advance_char(&mut line, &mut col, c);
                 i += 1;
             }
             ',' => {
-                out.push(Token { tok: Tok::Comma, line });
+                out.push(Token {
+                    tok: Tok::Comma,
+                    line,
+                    col,
+                });
+                advance_char(&mut line, &mut col, c);
                 i += 1;
             }
             ':' => {
-                out.push(Token { tok: Tok::Colon, line });
+                out.push(Token {
+                    tok: Tok::Colon,
+                    line,
+                    col,
+                });
+                advance_char(&mut line, &mut col, c);
+                i += 1;
+            }
+            '.' => {
+                out.push(Token {
+                    tok: Tok::Dot,
+                    line,
+                    col,
+                });
+                advance_char(&mut line, &mut col, c);
+                i += 1;
+            }
+            '[' => {
+                out.push(Token {
+                    tok: Tok::LBracket,
+                    line,
+                    col,
+                });
+                advance_char(&mut line, &mut col, c);
+                i += 1;
+            }
+            ']' => {
+                out.push(Token {
+                    tok: Tok::RBracket,
+                    line,
+                    col,
+                });
+                advance_char(&mut line, &mut col, c);
+                i += 1;
+            }
+            '?' => {
+                out.push(Token {
+                    tok: Tok::Question,
+                    line,
+                    col,
+                });
+                advance_char(&mut line, &mut col, c);
                 i += 1;
             }
             _ => {
@@ -206,15 +377,27 @@ pub fn lex(src: &str) -> Result<Vec<Token>, String> {
                 // written with an `=` or a doubled sign. The comments have
                 // already been handled, so a `/` here is division.
                 if let Some((tok, len)) = operator(&chars, i) {
-                    out.push(Token { tok, line });
+                    let tline = line;
+                    let tcol = col;
+                    let start = i;
                     i += len;
+                    advance_run(&mut line, &mut col, &chars, start, i);
+                    out.push(Token {
+                        tok,
+                        line: tline,
+                        col: tcol,
+                    });
                 } else {
                     err!("unexpected character '{}'", c);
                 }
             }
         }
     }
-    out.push(Token { tok: Tok::Eof, line });
+    out.push(Token {
+        tok: Tok::Eof,
+        line,
+        col,
+    });
     Ok(out)
 }
 
@@ -230,8 +413,8 @@ mod tests {
     }
 
     /// A number token with both its double and its exact integer value.
-    fn num(value: f64, int: Option<i64>) -> Tok {
-        Tok::Num(NumLit::new(value, int))
+    fn num(value: f64, int: Option<i64>, fraction_point: bool) -> Tok {
+        Tok::Num(NumLit::from_source(value, int, fraction_point))
     }
 
     #[test]
@@ -265,23 +448,23 @@ mod tests {
             vec![
                 Tok::Ident("x".into()),
                 Tok::PlusEq,
-                num(1.0, Some(1)),
+                num(1.0, Some(1), false),
                 Tok::Semi,
                 Tok::Ident("y".into()),
                 Tok::MinusEq,
-                num(2.0, Some(2)),
+                num(2.0, Some(2), false),
                 Tok::Semi,
                 Tok::Ident("z".into()),
                 Tok::StarEq,
-                num(3.0, Some(3)),
+                num(3.0, Some(3), false),
                 Tok::Semi,
                 Tok::Ident("w".into()),
                 Tok::SlashEq,
-                num(4.0, Some(4)),
+                num(4.0, Some(4), false),
                 Tok::Semi,
                 Tok::Ident("v".into()),
                 Tok::PercentEq,
-                num(5.0, Some(5)),
+                num(5.0, Some(5), false),
                 Tok::Semi,
                 Tok::Ident("x".into()),
                 Tok::PlusPlus,
@@ -291,13 +474,30 @@ mod tests {
                 Tok::Semi,
             ]
         );
+        assert_eq!(
+            kinds("a &&= b; c ||= d;"),
+            vec![
+                Tok::Ident("a".into()),
+                Tok::AndEq,
+                Tok::Ident("b".into()),
+                Tok::Semi,
+                Tok::Ident("c".into()),
+                Tok::OrEq,
+                Tok::Ident("d".into()),
+                Tok::Semi,
+            ]
+        );
     }
 
     #[test]
     fn lexes_numbers_with_fractions() {
         assert_eq!(
             kinds("1 2.5 0.5"),
-            vec![num(1.0, Some(1)), num(2.5, None), num(0.5, None)]
+            vec![
+                num(1.0, Some(1), false),
+                num(2.5, None, true),
+                num(0.5, None, true),
+            ]
         );
     }
 
@@ -320,7 +520,10 @@ mod tests {
     fn a_fractional_literal_has_no_exact_integer_value() {
         let toks = kinds("2.5");
         match &toks[0] {
-            Tok::Num(lit) => assert_eq!(lit.int, None),
+            Tok::Num(lit) => {
+                assert_eq!(lit.int, None);
+                assert!(lit.fraction_point);
+            }
             other => panic!("expected a number, got {other:?}"),
         }
     }
@@ -342,12 +545,25 @@ mod tests {
 
     #[test]
     fn skips_line_comments() {
-        assert_eq!(kinds("1 // comment\n2"), vec![num(1.0, Some(1)), num(2.0, Some(2))]);
+        assert_eq!(
+            kinds("1 // comment\n2"),
+            vec![num(1.0, Some(1), false), num(2.0, Some(2), false)]
+        );
     }
 
     #[test]
     fn skips_block_comments() {
-        assert_eq!(kinds("1 /* two\nlines */ 2"), vec![num(1.0, Some(1)), num(2.0, Some(2))]);
+        assert_eq!(
+            kinds("1 /* two\nlines */ 2"),
+            vec![num(1.0, Some(1), false), num(2.0, Some(2), false)]
+        );
+    }
+
+    #[test]
+    fn tracks_columns_on_a_line() {
+        let toks = lex("let x = 1;").expect("lex failed");
+        let x = toks.iter().find(|t| matches!(t.tok, Tok::Ident(ref s) if s == "x")).unwrap();
+        assert_eq!(x.col, 5);
     }
 
     #[test]

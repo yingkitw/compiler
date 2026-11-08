@@ -1,7 +1,8 @@
-//! The C runtime that the generated object is linked against.
+//! The C runtime that the generated program is linked against.
 //!
 //! It is kept minimal so that the generated code only needs a few
-//! well-defined (non-variadic) C ABI calls.
+//! well-defined (non-variadic) C ABI calls. The compiler writes it next to
+//! the assembly and the system C compiler assembles and links both.
 
 /// Tiny C runtime linked against the generated object. Kept minimal so the
 /// generated code only needs a few well-defined (non-variadic) C ABI calls.
@@ -19,9 +20,9 @@ pub const RUNTIME_C: &str = r#"
  * Printing "%g" instead would silently drop precision beyond six
  * significant digits. */
 void ts_print_number(double x) {
-    if (isnan(x)) { puts("NaN"); return; }
-    if (isinf(x)) { puts(x < 0 ? "-Infinity" : "Infinity"); return; }
-    if (x == 0.0) { puts("0"); return; }
+    if (isnan(x)) { puts("NaN"); fflush(stdout); return; }
+    if (isinf(x)) { puts(x < 0 ? "-Infinity" : "Infinity"); fflush(stdout); return; }
+    if (x == 0.0) { puts("0"); fflush(stdout); return; }
 
     int neg = x < 0;
     double a = neg ? -x : x;
@@ -78,16 +79,184 @@ void ts_print_number(double x) {
     }
     *p = '\0';
     puts(out);
+    fflush(stdout);
 }
 
-void ts_print_bool(signed char x) { puts(x ? "true" : "false"); }
+void ts_print_bool(signed char x) {
+    puts(x ? "true" : "false");
+    fflush(stdout);
+}
 
-void ts_print_int(long long x) { printf("%lld\n", x); }
+void ts_print_int(long long x) {
+    char buf[32];
+    char *end = buf + sizeof buf;
+    char *p = end;
+    *--p = '\n';
+    int neg = x < 0;
+    unsigned long long u;
+    if (neg) {
+        u = (unsigned long long)(-(x + 1)) + 1u;
+    } else {
+        u = (unsigned long long)x;
+    }
+    do {
+        *--p = (char)('0' + (u % 10u));
+        u /= 10u;
+    } while (u != 0);
+    if (neg) {
+        *--p = '-';
+    }
+    ssize_t ignored = write(1, p, (size_t)(end - p));
+    (void)ignored;
+    fflush(stdout);
+}
+
+/* Explicit integer division by zero check for targets whose `sdiv` does not
+ * trap. Matches the SIGFPE/SIGILL handler message. */
+void ts_int_div_zero(void) {
+    fflush(stdout);
+    static const char msg[] = "error: integer division by zero or overflow\n";
+    ssize_t ignored = write(2, msg, sizeof msg - 1);
+    (void)ignored;
+    _exit(1);
+}
 
 /* Remainder for doubles. Cranelift has no float remainder instruction, so
  * this calls libm. C's fmod truncates toward zero and takes the sign of the
  * dividend, which is exactly what JavaScript's % does. */
 double ts_fmod(double x, double y) { return fmod(x, y); }
+
+/* Convert a double to an int: truncate toward zero, with NaN becoming zero
+ * and an out-of-range value saturating at the ends of the range -- the
+ * semantics of Rust's `as`. The hardware's conversion traps instead, so the
+ * conversion is done here. */
+long long ts_double_to_int(double x) {
+    if (isnan(x)) return 0;
+    if (x >= 9223372036854775808.0) return 9223372036854775807LL;
+    if (x <= -9223372036854775808.0) return (-9223372036854775807LL - 1);
+    return (long long)x;
+}
+
+/* --- Strings (bump arena; literals live in .const) -------------------- */
+
+typedef struct { char *data; unsigned long len; } ts_str;
+
+#define TS_ARENA_BYTES (256 * 1024)
+static char ts_arena[TS_ARENA_BYTES];
+static size_t ts_arena_used;
+
+static char *ts_bump(size_t n) {
+    n = (n + 7) & ~((size_t)7);
+    if (ts_arena_used + n > TS_ARENA_BYTES) {
+        fflush(stdout);
+        static const char msg[] = "error: string allocation limit exceeded\n";
+        ssize_t ignored = write(2, msg, sizeof msg - 1);
+        (void)ignored;
+        _exit(1);
+    }
+    char *p = ts_arena + ts_arena_used;
+    ts_arena_used += n;
+    return p;
+}
+
+void ts_print_string(const char *data, unsigned long len) {
+    ssize_t ignored = write(1, data, len);
+    (void)ignored;
+    ignored = write(1, "\n", 1);
+    (void)ignored;
+    fflush(stdout);
+}
+
+unsigned char ts_str_equal(const char *a, unsigned long alen,
+                           const char *b, unsigned long blen) {
+    if (alen != blen) return 0;
+    return memcmp(a, b, alen) == 0 ? 1 : 0;
+}
+
+ts_str ts_str_concat(const char *a, unsigned long alen,
+                     const char *b, unsigned long blen) {
+    size_t n = (size_t)alen + (size_t)blen;
+    char *p = ts_bump(n);
+    memcpy(p, a, (size_t)alen);
+    memcpy(p + (size_t)alen, b, (size_t)blen);
+    return (ts_str){p, n};
+}
+
+/* --- Arrays (same bump arena) ----------------------------------------- */
+
+typedef struct {
+  double *data;
+  unsigned long len;
+  unsigned long cap;
+} ts_number_array;
+
+typedef struct {
+  signed char *data;
+  unsigned long len;
+  unsigned long cap;
+} ts_bool_array;
+
+static void ts_array_bounds(void) {
+    fflush(stdout);
+    static const char msg[] = "error: array index out of bounds\n";
+    ssize_t ignored = write(2, msg, sizeof msg - 1);
+    (void)ignored;
+    _exit(1);
+}
+
+ts_number_array *ts_number_array_new(unsigned long cap) {
+    ts_number_array *a = (ts_number_array *)ts_bump(sizeof(ts_number_array));
+    a->len = 0;
+    a->cap = cap;
+    a->data = cap ? (double *)ts_bump(cap * sizeof(double)) : NULL;
+    return a;
+}
+
+static void ts_number_array_grow(ts_number_array *a) {
+    unsigned long ncap = a->cap ? a->cap * 2 : 4;
+    double *p = (double *)ts_bump(ncap * sizeof(double));
+    if (a->len) memcpy(p, a->data, a->len * sizeof(double));
+    a->data = p;
+    a->cap = ncap;
+}
+
+void ts_number_array_push(ts_number_array *a, double v) {
+    if (a->len >= a->cap) ts_number_array_grow(a);
+    a->data[a->len++] = v;
+}
+
+double ts_number_array_get(ts_number_array *a, long long i) {
+    if (i < 0 || (unsigned long)i >= a->len) ts_array_bounds();
+    return a->data[(unsigned long)i];
+}
+
+unsigned long ts_array_len(ts_number_array *a) { return a->len; }
+
+ts_bool_array *ts_bool_array_new(unsigned long cap) {
+    ts_bool_array *a = (ts_bool_array *)ts_bump(sizeof(ts_bool_array));
+    a->len = 0;
+    a->cap = cap;
+    a->data = cap ? (signed char *)ts_bump(cap) : NULL;
+    return a;
+}
+
+static void ts_bool_array_grow(ts_bool_array *a) {
+    unsigned long ncap = a->cap ? a->cap * 2 : 4;
+    signed char *p = (signed char *)ts_bump(ncap);
+    if (a->len) memcpy(p, a->data, a->len);
+    a->data = p;
+    a->cap = ncap;
+}
+
+void ts_bool_array_push(ts_bool_array *a, signed char v) {
+    if (a->len >= a->cap) ts_bool_array_grow(a);
+    a->data[a->len++] = v;
+}
+
+signed char ts_bool_array_get(ts_bool_array *a, long long i) {
+    if (i < 0 || (unsigned long)i >= a->len) ts_array_bounds();
+    return a->data[(unsigned long)i];
+}
 
 /* --- Stack-overflow detection -------------------------------------------
  *
