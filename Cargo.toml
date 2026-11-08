@@ -1,6 +1,6 @@
 [package]
 name = "compiler"
-version = "0.4.0"
+version = "0.1.3"
 edition = "2024"
 rust-version = "1.96"
 description = "A tiny TypeScript-subset compiler that emits native binaries via assembly + cc"
