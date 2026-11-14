@@ -356,6 +356,19 @@
       *not* poisoned this time — touching a source file recompiled it), and
       the published artifact installed and run: its `fib(90)`, its `for`
       loop, its `+=` and its `as` all behave as the sources say.
+- [x] **Published as `compiler` v0.1.4** — the register cache: the assembly
+      backend's code-quality regression is closed. The tight loop is back
+      at the engines' level (138 ms against scriptc's 124 ms, `deno
+      compile`'s 158 ms and our own v0.1.0's 134 ms — it was 640 ms, five
+      times slower than v0.1.0), and unrewritten recursion is within 1.75x
+      of v0.1.0 (it was 3.4x). The cause was measured, not guessed: every
+      binary operation moved its operands through a stack temporary and
+      every call argument through another. The fix keeps the operands in
+      registers, puts the locals in callee-saved ones
+      (`src/backend/regs.rs`), and lets a comparison branch on its own
+      flags. Dry run green, `cargo package --list` reviewed, the release
+      binary verified before the upload, and the published artifact
+      installed and run afterwards.
 - [x] **Published as `compiler` v0.3.1** — the documentation audit and the
       benchmark-script fixes: three scripts had been silently measuring the
       recurrence rewrite instead of what they claimed, `bench/RESULTS.md` was
