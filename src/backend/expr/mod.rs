@@ -9,10 +9,16 @@ mod array;
 mod binop;
 mod call;
 
+/// An assignment statement, with its value dead — `binop::gen_assign_stmt`
+/// may then write a register resident directly.
+pub(super) fn gen_assign_stmt(f: &mut Fn, name: &str, value: &Expr) -> Result<(), String> {
+    binop::gen_assign_stmt(f, name, value)
+}
+
 use crate::ast::*;
 
 use super::asm::reg::{D, FP, X};
-use super::asm::{Asm, Cond, Mem};
+use super::asm::{Asm, Cond, Label, Mem};
 use super::{Fn, Local, Val};
 
 /// The type a literal should adopt given the other operand's type. Only
@@ -28,8 +34,10 @@ pub fn gen_expr(f: &mut Fn, e: &Expr) -> Result<(Val, Type), String> {
     match e {
         Expr::Num(lit) => {
             let asm = f.asm();
-            asm.load_imm(X(0), lit.value.to_bits() as i64);
-            asm.fmov_d_from_x(D(0), X(0));
+            if !asm.fmov_d_imm(D(0), lit.value) {
+                asm.load_imm(X(0), lit.value.to_bits() as i64);
+                asm.fmov_d_from_x(D(0), X(0));
+            }
             Ok((Val::Num, Type::Number))
         }
         Expr::Bool(x) => {
@@ -47,7 +55,7 @@ pub fn gen_expr(f: &mut Fn, e: &Expr) -> Result<(Val, Type), String> {
         }
         Expr::Var(name) => {
             let local = f.lookup(name)?;
-            load_local(f.asm(), &local);
+            load_local(f, &local);
             Ok((Val::of(local.ty), local.ty))
         }
         Expr::Assign { name, value } => {
@@ -59,7 +67,7 @@ pub fn gen_expr(f: &mut Fn, e: &Expr) -> Result<(Val, Type), String> {
             if vt != local.ty {
                 return Err(format!("cannot assign {} to '{}: {}'", vt, name, local.ty));
             }
-            store_local(f.asm(), &local);
+            store_local(f, &local);
             Ok((Val::of(local.ty), local.ty))
         }
         Expr::Cond {
@@ -136,8 +144,19 @@ fn local_mem(local: &Local) -> Mem {
     }
 }
 
-/// Load a local into the register its type calls for.
-fn load_local(asm: &mut Asm, local: &Local) {
+/// Load a local into the register its type calls for. A cached local is
+/// moved from its callee-saved register; anything else comes from its
+/// slot.
+pub(super) fn load_local(f: &mut Fn, local: &Local) {
+    if let Some((reg, true)) = f.cached(local) {
+        f.asm().fmov_d_from_d(D(0), D(reg));
+        return;
+    }
+    if let Some((reg, false)) = f.cached(local) {
+        f.asm().mov_reg(X(0), X(reg));
+        return;
+    }
+    let asm = f.asm();
     let mem = local_mem(local);
     match local.ty {
         Type::Number => asm.load_double(D(0), mem),
@@ -156,8 +175,20 @@ fn load_local(asm: &mut Asm, local: &Local) {
     }
 }
 
-/// Store the register into a local.
-fn store_local(asm: &mut Asm, local: &Local) {
+/// Store the register into a local — its cache register when it has one,
+/// its slot otherwise.
+pub(super) fn store_local(f: &mut Fn, local: &Local) {
+    if let Some((reg, true)) = f.cached(local) {
+        f.asm().fmov_d_from_d(D(reg), D(0));
+        f.mark_dirty(local);
+        return;
+    }
+    if let Some((reg, false)) = f.cached(local) {
+        f.asm().mov_reg(X(reg), X(0));
+        f.mark_dirty(local);
+        return;
+    }
+    let asm = f.asm();
     let mem = local_mem(local);
     match local.ty {
         Type::Number => asm.store_double(D(0), mem),
@@ -239,6 +270,82 @@ fn gen_cond(
     f.asm().place(&merge_label);
     load_temp(f.asm(), slot, t_then);
     Ok((Val::of(t_then), t_then))
+}
+
+/// Branch to `target` when `cond` evaluates to `when`.
+///
+/// A comparison is fused: its flags branch directly, with the inverse
+/// condition (the float inverses are chosen so an unordered comparison —
+/// a `NaN` operand — takes the branch, because every comparison on `NaN`
+/// is false). Anything else is materialised into a boolean and tested.
+pub(super) fn branch_when(
+    f: &mut Fn,
+    cond: &Expr,
+    target: &Label,
+    when: bool,
+) -> Result<(), String> {
+    // `!e` inverts the test.
+    if let Expr::Un {
+        op: UnOp::Not,
+        expr,
+    } = cond
+    {
+        return branch_when(f, expr, target, !when);
+    }
+    if let Expr::Bin { op, lhs, rhs } = cond {
+        let is_cmp = matches!(
+            op,
+            BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Eq | BinOp::Ne
+        );
+        let string_eq =
+            matches!(op, BinOp::Eq | BinOp::Ne) && binop::expr_might_be_string(f, lhs)
+                || matches!(op, BinOp::Eq | BinOp::Ne) && binop::expr_might_be_string(f, rhs);
+        if is_cmp && !string_eq {
+            let (lt, rt, l, r) = binop::gen_operands(f, lhs, rhs)?;
+            if lt != rt {
+                return Err(match op {
+                    BinOp::Eq | BinOp::Ne => {
+                        format!("cannot compare {} with {}", lt, rt)
+                    }
+                    _ => format!(
+                        "relational operators require two numbers or two ints, got {} and {}",
+                        lt, rt
+                    ),
+                });
+            }
+            let asm = f.asm();
+            let (holds, fails) = if lt == Type::Number {
+                asm.fcmp(D(l), D(r));
+                match op {
+                    BinOp::Eq => (Cond::Eq, Cond::Ne),
+                    BinOp::Ne => (Cond::Ne, Cond::Eq),
+                    BinOp::Lt => (Cond::Mi, Cond::Pl),
+                    BinOp::Le => (Cond::Ls, Cond::Hi),
+                    BinOp::Gt => (Cond::Gt, Cond::Le),
+                    BinOp::Ge => (Cond::Ge, Cond::Lt),
+                    _ => unreachable!("checked above"),
+                }
+            } else {
+                asm.cmp(X(l), X(r));
+                match op {
+                    BinOp::Eq => (Cond::Eq, Cond::Ne),
+                    BinOp::Ne => (Cond::Ne, Cond::Eq),
+                    BinOp::Lt => (Cond::Lt, Cond::Ge),
+                    BinOp::Le => (Cond::Le, Cond::Gt),
+                    BinOp::Gt => (Cond::Gt, Cond::Le),
+                    BinOp::Ge => (Cond::Ge, Cond::Lt),
+                    _ => unreachable!("checked above"),
+                }
+            };
+            asm.branch_if(if when { holds } else { fails }, target);
+            return Ok(());
+        }
+    }
+    let (v, ct) = gen_expr(f, cond)?;
+    as_bool(f.asm(), v, ct)?;
+    f.asm().cmp_imm(X(0), 0);
+    f.asm().branch_if(if when { Cond::Ne } else { Cond::Eq }, target);
+    Ok(())
 }
 
 /// Convert a value to a boolean: a number is false iff it equals zero.

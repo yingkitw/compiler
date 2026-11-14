@@ -74,7 +74,8 @@ pub enum BinOp {
     Mul,
     Div,
     /// Remainder. Integer operands use `srem`; float operands go through the
-    /// runtime's `ts_fmod`, because Cranelift has no float remainder.
+    /// runtime's `ts_fmod`, because the AArch64 ISA has no float remainder
+    /// instruction.
     Rem,
     Eq,
     Ne,

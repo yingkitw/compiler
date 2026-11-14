@@ -5,14 +5,16 @@
 
 A small Rust project that compiles a **statically typed subset** of TypeScript to
 a native binary: hand-written lexer and parser, a type-checking backend that
-emits assembly for the host (AArch64 on Apple silicon), then `cc` links a tiny
-C runtime. No LLVM, no JS engine, no third-party codegen crates.
+emits assembly for the host (AArch64 on Apple silicon), then `cc` assembles
+and links it with a tiny C runtime. No LLVM, no JS engine, no third-party
+dependencies at all.
 
 ```sh
 cargo install compiler   # installs `tsc` and `tscc` (same binary; prefer `tscc` if Microsoft's `tsc` is on PATH)
 ```
 
-You need Rust 1.96+ and a C compiler on `PATH` for linking.
+You need Rust 1.96+ and a C compiler on `PATH` (it assembles the emitted
+`.s` and links the runtime — both `-c` and the default mode use it).
 
 ## Quick start
 
@@ -55,7 +57,7 @@ grammar and type rules. In short:
 - Functions, recursion, `if` / `while` / C-style `for` / `for…of`, `as` casts,
   compound assignment, `++`/`--`, `&&` / `||` (short-circuit), `?:`, block
   expressions, and a few logical assignment forms.
-- Built-ins: `print(number | int | boolean)`.
+- Built-ins: `print(number | int | boolean | string)`.
 - Optional `function main(): void` runs after top-level statements.
 
 The checker is strict: no implicit numeric conversions; mismatches are compile
@@ -80,7 +82,7 @@ source → lexer → parser → AST → rewrite → backend → .s → cc → bi
 | `parser/` | AST |
 | `rewrite/` | Tail-call and recurrence → loop when safe |
 | `backend/` | Type-check + emit assembly |
-| `runtime.c` | `print`, stack-overflow guard, float remainder |
+| `runtime.c` | `print`, the string/array bump arena, stack-overflow + SIGFPE guards, float remainder, saturating `number→int` |
 
 [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`SPEC.md`](SPEC.md) have the detail.
 Emitted objects can carry a DWARF line table back to the `.ts` file (see SPEC).
@@ -89,25 +91,30 @@ Emitted objects can carry a DWARF line table back to the `.ts` file (see SPEC).
 
 Same programs, several toolchains; the harness requires matching output. Figures
 below come from the committed [`bench/RESULTS.md`](bench/RESULTS.md) (regenerate
-with `python3 scripts/bench.py`). That run had load average of 4.4 and a 17.2 ms
-spawn floor — startup times move with host load.
+with `python3 scripts/bench.py`). That run had load average of 198.9 and a 20.07 ms
+spawn floor — the host was busy, but the numbers moved together, so the ratios
+are what this table shows.
 
 | | compiler | scriptc | compiler v0.1.0 | deno compile | bun --compile | tsrust + node | tsc + node |
 |---|---|---|---|---|---|---|---|
-| **Artifact size** | **33.8 KiB** | 109 KiB | 32.9 KiB | 65.1 MiB | 60.5 MiB | 133 B JS | 119 B JS |
-| **Startup** | **24.7 ms** | 23.2 ms | 24.0 ms | 34.1 ms | 35.4 ms | 149 ms | 145 ms |
-| **Compile time** | **0.19 s** | 0.10 s | 0.17 s | 1.01 s | 0.70 s | 0.40 s | 0.32 s |
-| **fib(35) runtime** | **23.4 ms** | 49.8 ms | 66.4 ms | 124 ms | 82.0 ms | 239 ms | 236 ms |
-| **fib(35) unrewritten** | 66.8 ms | **45.8 ms** | 64.9 ms | 124 ms | 81.7 ms | 237 ms | 236 ms |
-| **loop(1e8) runtime** | **121 ms** | 135 ms | 133 ms | 135 ms | 139 ms | 250 ms | 245 ms |
+| **Artifact size** | **35.0 KiB** | 108.9 KiB | 32.9 KiB | 65.1 MiB | 60.5 MiB | 133 B JS | 119 B JS |
+| **Startup** | 33.04ms | **23.77ms** | 26.49ms | 82.69ms | 47.60ms | 153.54ms | 143.98ms |
+| **Compile time** | 0.27s | 0.27s | 0.20s | 2.24s | 2.86s | 1.21s | 0.69s |
+| **fib(35) runtime** | **28.87ms** | 58.41ms | 72.09ms | 216.54ms | 136.07ms | 292.95ms | 260.70ms |
+| **fib(35) unrewritten** | 122.47ms | **49.50ms** | 70.18ms | 139.23ms | 94.33ms | 259.11ms | 250.34ms |
+| **loop(1e8) runtime** | 138.42ms | **123.71ms** | 134.11ms | 157.54ms | 157.46ms | 280.46ms | 260.61ms |
 
-We are small and quick to start because there is no embedded VM. On numeric loops
-we are roughly even with mature JITs; on some fibonacci shapes
-[`scriptc`](https://scriptc.dev) is faster than us, and on others our recurrence
-rewrite helps. The `int` type is **1.55x** faster on a pure arithmetic loop in
-that report; it does **1.03x slower** on an unrewritten recursive fib — the
-gaps are as much about call patterns as about arithmetic. Treat the table as a
-snapshot, not a verdict.
+We are still small and quick to start — no embedded VM — and the recurrence
+rewrite keeps the natural-shape fibonacci the fastest in the set. The assembly
+backend that replaced Cranelift in v0.1.3 was a measured regression in raw code
+quality (the tight loop ran ~5x slower than our own published v0.1.0); the
+register cache closed it: the loop is now at the engines' level — level with
+our own v0.1.0 and faster than `deno compile` and `bun --compile` — and
+unrewritten recursion is within 1.75x of v0.1.0 (it was 3.4x), still behind
+`scriptc`, whose own recursion rewrite cuts the number of calls. The `int` type
+is **1.88x** faster on a pure arithmetic loop and **2.21x** faster on an
+unrewritten recursive fib in that report. Treat the table as a snapshot, not a
+verdict.
 
 ## Testing
 
@@ -115,8 +122,8 @@ snapshot, not a verdict.
 cargo test   # unit tests + compile/run every example under examples/
 ```
 
-See also `tests/rewrite_*.rs`, `tests/abi.rs`, `tests/sanitize.rs`, and
-`tests/fuzz.rs`.
+See also `tests/rewrite_*.rs`, `tests/abi.rs`, `tests/sanitize.rs`,
+`tests/debug_line.rs`, and `tests/fuzz.rs`.
 
 ## Documentation
 

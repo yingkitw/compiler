@@ -3,6 +3,46 @@
 ## Done
 
 ### Core
+- [x] **The code generator is hand-written assembly, not Cranelift** (2026-11-08)
+      — `src/codegen/` was replaced wholesale by `src/backend/`, which emits
+      AArch64 assembly text through a typed `asm/` module
+      (`Asm`/`inst.rs`/`reg.rs`: operands are types, not text, so a register
+      cannot be written where an immediate belongs), and the system `cc`
+      assembles and links it with the C runtime. The crate now has **zero
+      third-party dependencies** (Cranelift ×4 and target-lexicon dropped;
+      `Cargo.lock` is empty of dependencies), the compiler got column
+      tracking in every diagnostic, DWARF `.file`/`.loc` line tables, a
+      `tscc` alias binary, and the language surface grew in the same change:
+      strings, arrays, `for-of`, `?:`, block expressions, `&&=`/`||=`, and
+      shadowing warnings. Published as **v0.1.3** — and because the
+      Cranelift-based releases were superseded, **v0.2.0 through v0.4.0 were
+      yanked** on crates.io (v0.1.0–v0.1.2 remain, plus v0.1.3), which is
+      why the version number went *down*.
+- [x] **Every markdown document audited against the code** (2026-11-14) — the
+      audit the backend swap never got. Found and fixed: SPEC still described
+      a "five function" runtime (it is seventeen-plus across printing,
+      arithmetic, strings, arrays and signals), omitted `print(string)`, the
+      `of` keyword, `&&=`/`||=` tokens, string/array/conditional/block-expression
+      grammar, and `string` from the type-name list; claimed `i64::MIN / -1`
+      is reported as an error (**measured: it wraps to `i64::MIN`, exit 0** —
+      the explicit divisor-zero check only catches zero, and AArch64 `sdiv`
+      doesn't trap) and claimed `Triple::host()`/`CallConv` behaviour that
+      died with Cranelift; the grammar never referenced `stepStmt` from
+      `statement`; ARCHITECTURE described `expr.rs` (a directory now), the
+      old 46-test split, an "SSA variable" in short-circuit codegen, and a
+      five-function runtime tree; AGENTS' tree omitted `array.rs`,
+      `debug_line.rs` and three examples and its benchmark table said our
+      path was "Cranelift machine code"; README's built-ins and runtime rows
+      predated strings/arrays; TODO had no record of the backend swap, the
+      v0.1.3 publish, or the yanks. The committed `bench/RESULTS.md` also
+      predated the backend swap; regenerating it was the audit's biggest
+      find: the assembly backend regressed the tight loop **~5x** and
+      unrewritten recursion **~3.4x** against our own v0.1.0, measured
+      interleaved with every other toolchain at its historical figure (the
+      details and the fix plan are the top High-priority item). `TSC_DUMP_ASM`
+      was undocumented. New TODO items record what the audit found but did not
+      change in code (`%` by zero, fuzz vocabulary, file sizes, the codegen
+      gap).
 - [x] **The audit's findings are fixed** — an independent review of the whole
       codebase found five real bugs, all fixed with tests:
       - **The tail-call accumulator miscompiled `number` programs.** The
@@ -231,7 +271,7 @@
       lines. The split was a *move*, verified by the test suite — the object
       files it produces are byte-for-byte identical to the ones the single
       files produced
-- [x] **116 inline unit tests + 56 integration tests** — all passing; `cargo clippy
+- [x] **127 inline unit tests + 56 integration tests** — all passing; `cargo clippy
       --all-targets` exits 0; doc-sync enforced by `tests/docs_sync.rs`
 - [x] **Inline unit tests for the lexer, parser, rewrites, and backend** —
       15 lexer tests, 45 parser tests, 42 rewrite tests, and 14 backend regression
@@ -330,6 +370,78 @@
 ## Next
 
 ### High priority
+- [x] **Close the assembly backend's code-quality regression** (2026-11-14)
+      — the first post-swap benchmark (2026-11-14, in `bench/RESULTS.md`)
+      measured what six days of stale report hid: the tight `loop` workload
+      ran **640 ms against our own published v0.1.0's 125 ms**, and
+      `fib_recursive` **244 ms against 71 ms**. The cause was that every
+      binary operation moved its operands through a stack temporary
+      (`store_temp`/`load_temp` per operand) and every call argument
+      through another, so the generated code was memory-bound where
+      Cranelift's had been register-resident. Three changes, in the order
+      the measurement demanded them:
+      - **The operands stay in registers.** One operand may wait in
+        `x1`/`d1` while the other is evaluated — a literal last (so it can
+        adopt the other operand's type), or one whose evaluation touches
+        nothing but the result register. A frame slot is now the fallback,
+        not the rule. (640 ms → 460 ms)
+      - **The locals live in callee-saved registers** (`src/backend/regs.rs`,
+        the register cache): `d8`–`d13` for numbers, `x19`–`x24` for ints
+        and booleans. A `while` promotes the locals its body assigns, so
+        they stay in registers across the back edge, and a cached operand is
+        used *where it is* — `fadd d0, d8, d9`, with no move at all. The
+        frame stays the authority: a load consults the cache, a store
+        updates it, so a missed promotion costs speed and never
+        correctness. (460 ms → 138 ms)
+      - **The remaining slack**: a comparison branches on its own flags
+        instead of materialising a boolean, an assignment statement whose
+        value is dead writes its target register directly
+        (`fadd d8, d8, d0`), and a literal the hardware can encode is an
+        immediate (`fmov d0, #1`) instead of a literal-pool load.
+      The result, in the regenerated `bench/RESULTS.md`: **the tight loop
+      is back at the engines' level** — 138 ms against scriptc's 124 ms,
+      `deno compile`'s 158 ms, `bun --compile`'s 157 ms and our own
+      v0.1.0's 134 ms (it was 5.1x slower than v0.1.0), which meets this
+      item's criterion. **The unrewritten recursion is at 122 ms against
+      v0.1.0's 70 ms — 1.75x, short of the 1.5x this item set** (it was
+      3.4x). What is left is the call itself: the remaining per-entry cost
+      is the frame's save and restore of the callee-saved registers and the
+      call/return pair, which is what scriptc's own recursion rewrite
+      attacks by making fewer calls. The output gate stayed green
+      throughout: every example still prints exactly what it printed
+      before, and all six toolchains still agree byte-for-byte.
+- [ ] **Decide what `%` by zero means for `int`** — the audit measured a
+      divergence the Cranelift→assembly swap introduced: `/` by zero reports
+      `error: integer division by zero or overflow` (the generated code
+      checks the divisor because AArch64 `sdiv` does not trap), but `%` by
+      zero has **no check**: `7 % 0` prints `7` and exits 0, because AArch64
+      `srem` by zero returns the dividend. Cranelift's `srem` trapped, so
+      this used to be an error. Either extend the `/` check to `Rem` (report
+      the same error) or accept and pin the hardware's answer; the current
+      state is inconsistent between the two operators and undocumented
+      intent. Test plan: extend the explicit-check pattern in
+      `backend/expr/binop.rs` to `BinOp::Rem`, add a negative e2e case
+      (assert stderr + exit 1), and re-run `scripts/bench.py` (the check
+      changes every `%`).
+- [ ] **Teach the fuzzer the tokens the language grew** — `tests/fuzz.rs`
+      still draws from the Cranelift-era vocabulary: no `of`, no string
+      literals, no `[` `]` `.`, no `?` `:`, no `&&=` `||=`. `of` is a
+      reserved word since `for-of`, and MEMORY's rule says every new keyword
+      joins the fuzzer's vocabulary. Cheap, and it exercises the parse paths
+      the new features added.
+- [ ] **Five files are over the ~450-line convention** — `src/lexer.rs`
+      (601; the string-literal arm and the operator arms are the natural
+      seams), `src/parser/stmt.rs` (524; the two `for` desugars can move to
+      their own file), `src/rewrite/tail_call/mod.rs` (486; tests already
+      sit in `tests.rs`, so the split is the accumulator/void halves),
+      `src/backend/expr/binop.rs` (547; the operand scheme, the string
+      operations and the assignment path are the seams) and
+      `src/backend/function.rs` (506; the callee-save prologue/epilogue and
+      the local counting are the seams). The first three were recorded by
+      the 2026-11-14 doc audit's file-size pass; the last two grew with the
+      register cache. Split when the tree is quiet, per AGENTS.md Step 6a:
+      pure move, `pub(super)` only where calls cross, prove it with
+      byte-identical `tsc -c` SHA-256s.
 - [x] **Strings (MVP)** — `string` type, `"..."` literals (`\n`, `\t`, `\\`,
       `\"`), `+` concatenation, `==` / `!=`, `print(string)`, parameters and
       returns; literals in `__TEXT,__const`, dynamic chunks in a bump arena
@@ -367,7 +479,12 @@
 - [ ] **Classes** — with fields, methods, and `this`
 - [ ] **Objects and records** — `{ x: number }` literals and property access
 - [ ] **Cross-compilation** — target triples other than the host
-- [ ] **Emit assembly / LLVM IR** — `--emit-asm` for inspection and debugging
+- [ ] **`--emit-asm` flag** — the backend emits assembly natively and
+      `TSC_DUMP_ASM=<path>` already writes the `.s` to disk (documented in
+      SPEC); a first-class `--emit-asm` / `-S` flag that writes it as the
+      *output* (instead of a linked binary) is the remaining nicety. The
+      original "or LLVM IR" half of this item is obsolete: there is no LLVM
+      and no dependency budget for one
 - [ ] **REPL** — interactive mode evaluating snippets against a persistent context
 
 ## Brainstorming
@@ -434,10 +551,13 @@ to the roadmap:
 - **The post-audit nits, deliberately not fixed** — the independent review
   found these and they are recorded rather than repaired, because each is a
   refactor of a mature module without a bug to justify it:
-  - `define_body()` takes 14 parameters, five of them runtime `FuncId`s; a
-    small `Runtime` struct would collapse the list.
+  - ~~`define_body()` takes 14 parameters, five of them runtime `FuncId`s; a
+    small `Runtime` struct would collapse the list.~~ **Mooted by the
+    backend replacement** — the Cranelift codegen it described is gone; the
+    assembly backend's `Fn::new`/`emit_body` have no such parameter list.
   - `gen_binop()` is ~100 lines with `unreachable!()` arms that are only
-    unreachable because of the earlier type checks.
+    unreachable because of the earlier type checks (still true in
+    `backend/expr/binop.rs`).
   - `common.rs` in the rewrites has five depth-guarded recursive walkers that
     share the same guard; a generic walker would collapse them.
   - `int_hint()` returns `Some(Int)` or `None` and nothing else — it is
@@ -485,6 +605,61 @@ Recorded per AGENTS.md Step 7. Total is /30.
 | 2026-11-05 (post-doc-audit) | 5 | 5 | 5 | 5 | 5 | 5 | 30 |
 | 2026-11-07 (post-for-loop) | 5 | 5 | 5 | 5 | 5 | 5 | 30 |
 | 2026-11-07 (post-performance) | 5 | 5 | 5 | 5 | 5 | 5 | 30 |
+| 2026-11-08 (backend swap, scored 2026-11-14) | 5 | 3 | 4 | 3 | 5 | 5 | 25 |
+| 2026-11-14 (post-doc-audit) | 5 | 3 | 4 | 5 | 5 | 5 | 27 |
+| 2026-11-14 (post-register-cache) | 5 | 5 | 4 | 5 | 5 | 5 | 29 |
+
+**Evidence (2026-11-14, post-register-cache)**: the assembly backend's
+code-quality regression is closed. *Codegen 3 → 5*: the tight loop went
+from 640 ms to **138 ms** (against the engines' 124–158 ms and our own
+v0.1.0's 134 ms — it was 5.1x slower than v0.1.0, now level with it),
+and unrewritten recursion from 244 ms to **122 ms** (1.75x of v0.1.0's
+70 ms, against a 1.5x target; it was 3.4x). The output gate stayed green:
+all six toolchains still agree byte-for-byte on every workload, and every
+example still prints what it printed. The cause was measured, not guessed —
+every binary operation moved its operands through a stack temporary, and
+every call argument through another; the fix is the register cache
+(`src/backend/regs.rs`): locals in callee-saved registers, a cached
+operand used where it is (`fadd d0, d8, d9`), a comparison branching on
+its own flags, and an assignment statement writing its target register
+directly. *Maintainability stays 4*: the register cache is a new module
+with its own tests, but `src/backend/expr/binop.rs` (547 lines) and
+`src/backend/function.rs` (506) grew past the ~450-line convention and
+are recorded as a High-priority item — Step 6a defers the split until the
+tree is quiet, and this change is in both files. *Docs stays 5*: the
+README's table is re-quoted from the regenerated report (the doc-sync
+gates check it cell by cell), and ARCHITECTURE, AGENTS, MEMORY and TODO
+describe the cache. *Correctness stays 5*: `cargo test` is green — 127
+inline unit tests (six new ones pin the cache's shapes) + 56 integration
+tests, including the sanitizer, ABI, fuzz and differential-rewrite gates.
+
+**Evidence (2026-11-14, post-doc-audit)**: every markdown file was checked
+claim-by-claim against the code (the audit the 2026-11-08 backend-swap
+commit never got). *Docs 3 → 5*: the swap shipped with SPEC describing a
+five-function runtime, no `print(string)`, no `of` keyword, a grammar that
+could not derive strings, arrays, `?:`, block expressions or `for-of`, and
+an `i64::MIN / -1` error claim that measurement disproved (it wraps);
+ARCHITECTURE describing `expr.rs` and an "SSA variable"; AGENTS' tree and
+benchmark table pre-dating the backend; README quoting a benchmark report
+that pre-dated the backend; TODO missing the swap, the v0.1.3 publish and
+the v0.2.0–v0.4.0 yanks; `TSC_DUMP_ASM` undocumented. All fixed; the
+benchmark was regenerated and the README re-quoted from it. *Codegen 5 → 3*:
+that regeneration — Step 3a, run six days late — measured a real regression
+the stale report had hidden: the tight loop is ~5x slower and unrewritten
+recursion ~3.4x slower than our own published v0.1.0, interleaved in one
+run where every other toolchain matched its historical figure. Generated
+code is still *correct* (the output gate is byte-identical across six
+toolchains), but the dimension's evidence has always included measured
+performance, and 640 ms against 125 ms is not a 5. *Maintainability
+5 → 4*: the same pass found three files over the ~450-line convention
+(`lexer.rs` 601, `parser/stmt.rs` 524, `rewrite/tail_call/mod.rs` 486) —
+recorded as High-priority items with the split seams named, per Step 6a's
+"split when the tree is quiet". The retroactive 2026-11-08 row scores the
+state the swap left the tree in; the doc-sync gates passed the whole time
+because they check existence and counts, not truth — the same blind spot
+the 2026-11-05 audit hit, which is why this audit re-measured the claims
+rather than trusting the green suite. **The weakest dimension is now
+Codegen, and the fix is the top TODO item.**
 
 **Evidence (2026-11-07, post-for-loop)**: the C-style `for` loop landed as a
 parser-level desugar — no AST variant, no codegen arm, no runtime change — so

@@ -45,9 +45,9 @@ over about 450 lines:
 
 | Module | Files | What is in them |
 |---|---|---|
-| `parser/` | `mod.rs`, `stmt.rs`, `expr.rs`, `tests.rs` | the token helpers and the statement dispatch; the statement forms; one method per precedence level |
+| `parser/` | `mod.rs`, `stmt.rs`, `expr.rs`, `tests.rs` + `tests/` | the token helpers and the statement dispatch; the statement forms (including the `for` and `for-of` desugars); one method per precedence level; the shared test helpers, with the tests in `tests/` (`stmts.rs`, `exprs.rs`, `errors.rs`) |
 | `rewrite/` | `mod.rs`, `common.rs`, `tail_call/`, `recurrence/` | the entry point and the shared predicates; each rewrite with its own tests; the recurrence split into recognising the shape (`recognize.rs`) and building the loop (`build.rs`) |
-| `backend/` | `mod.rs`, `function.rs`, `expr/`, `stmt.rs`, `runtime.rs`, `tests.rs`, `asm/` | `emit` and the C wrapper; per-function frame; `expr/`; statements; C shim; regressions; `asm/` |
+| `backend/` | `mod.rs`, `function.rs`, `expr/`, `stmt.rs`, `regs.rs`, `runtime.rs`, `tests.rs`, `asm/` | `emit` and the C wrapper; per-function frame; `expr/` (`mod.rs`, `binop.rs`, `call.rs`, `array.rs`); statements; the register cache; C shim; regressions; `asm/` |
 
 ### `main.rs` — CLI entry point
 - Parses arguments by hand: `-o` / `--output`, `-c` / `--compile-only`,
@@ -89,18 +89,22 @@ over about 450 lines:
 - `parse(tokens: Vec<Token>) -> Result<Program, String>`.
 - `mod.rs` holds the parser state and the token helpers; `stmt.rs` the
   statement forms (`let_decl`, `func_decl`, `if_stmt`, `while_stmt`,
-  `for_stmt`, `return_stmt`, `block`, expression statements); `expr.rs` one
-  method per precedence level (`logic_or`, `logic_and`, `equality`,
-  `comparison`, `term`, `factor`, `unary`, `call`, `primary`), plus
-  `assignment` at the top. `comparison` also handles `as` casts — their
+  `for_stmt` — which desugars the C-style `for` *and* `for-of` —
+  `return_stmt`, `block`, `block_expr`, expression statements and the
+  increment/decrement sugar); `expr.rs` one method per precedence level
+  (`assignment`, `conditional`, `logic_or`, `logic_and`, `equality`,
+  `comparison`, `term`, `factor`, `unary`, `call`, `primary`).
+  `comparison` also handles `as` casts — their
   precedence is relational, wrapping the whole expression to the left — and
   its `tight_tail` continues the tighter operators after a cast, so
   `x as int + 1` is `(x as int) + 1`.
-- The parser performs only *syntactic* checks plus three well-formedness rules:
-  a `let` needs a type or an initializer, a variable or parameter cannot have
-  type `void`, and an expression or statement may not nest deeper than
-  `MAX_DEPTH`. The `main` shape is checked by the code generator, and all type
-  checking happens there too.
+- The parser performs only *syntactic* checks plus a handful of
+  well-formedness rules: a `let` needs a type or an initializer, a variable
+  or parameter cannot have type `void`, an expression or statement may not
+  nest deeper than `MAX_DEPTH`, a name may not be redeclared in the same
+  scope, and an inner binding that hides an outer one produces a warning
+  (`Program.warnings`, printed by `main`). The `main` shape is checked by
+  the backend, and all type checking happens there too.
 - `for_stmt` is a desugar, not a statement form: the parser emits a block
   holding the init and a `while` whose body is the loop body followed by the
   step, so there is no `Stmt::For` anywhere. The AST, the rewrites and the
@@ -220,21 +224,39 @@ over about 450 lines:
     statements and the user's `main`. `Fn` holds the state of one function
     being written: its assembler, the scopes, the frame's locals and the
     pool of temporaries.
-  - `expr.rs` and `stmt.rs` — the type rules and the code they emit. Their
+  - `expr/` and `stmt.rs` — the type rules and the code they emit. Their
     methods (`gen_expr`, `gen_binop`, `gen_short_circuit`, `gen_call`,
-    `gen_stmt`) do type checking *and* emit instructions in one pass.
+    `gen_stmt`) do type checking *and* emit instructions in one pass;
+    `expr/array.rs` holds the array literal/index/`length`/`push` rules.
   - `asm/` — the assembler the code is written through: `mod.rs` (the
     builder, the labels, the branch conditions and the memory operands),
     `inst.rs` (the instructions) and `reg.rs` (the registers). The operands
     are types, not text, so a register cannot be written where an immediate
     belongs — the mistakes the assembler would only report after the program
     had been compiled become compile errors here.
+  - `regs.rs` — the register cache: the locals that live in callee-saved
+    registers (`d8`–`d13`, `x19`–`x24`) instead of in frame slots. The
+    frame stays the authority — a load consults the cache, a store updates
+    it — so a local that is never promoted simply keeps its slot. A `while`
+    promotes the locals its body assigns, so they stay in registers across
+    its back edge; the cache's entries belong to the region (the function,
+    or a loop) that promoted them, and a closing region flushes its dirty
+    entries back to their slots.
   - `runtime.rs` — `RUNTIME_C`, the embedded C runtime shim, written to disk at
     link time.
 - The value model: every expression leaves its value in a register — `x0`
-  for an `int` or a `boolean`, `d0` for a `number` — and the frame holds
-  what must outlive it: the locals, and a pool of temporaries for the two
-  operands of a binary operation.
+  for an `int` or a `boolean` (and the data pointer of an array), `d0` for
+  a `number`, `x0` + `x1` (data + byte length) for a `string` — and the
+  frame holds what must outlive it: the locals, and a pool of temporaries
+  for the two operands of a binary operation. A *cached* local is the
+  exception: its value lives in a callee-saved register, and because
+  expression evaluation never touches those registers, it can be used as
+  an operand where it is — `fadd d0, d8, d9`, with no move at all.
+- The operand scheme: the operand evaluated last is one the other's value
+  can wait for — a literal (so it can adopt the other operand's type), or
+  one whose evaluation touches nothing but the result register. Its value
+  waits in `x1`/`d1`; only when neither operand qualifies does a value take
+  a frame slot.
 
 ## Data Flow
 
@@ -252,7 +274,7 @@ ast::Program                   Type / Expr / Stmt trees
    ▼
 ast::Program                   tail calls and linear recurrences turned into loops
    │  backend::emit
-   ├─ pass 1: collect Stmt::Func → FuncId + signature   (enables recursion
+   ├─ pass 1: collect Stmt::Func → name + signature      (enables recursion
    │                                                        and forward refs)
    ├─ pass 2: for each function → emit_body
    │            └─ expr::gen_expr / stmt::gen_stmt walk the AST:
@@ -272,12 +294,15 @@ native binary
 
 ```
 main (C ABI, returns i32)
-   └── ts_runtime_init     installs the stack-overflow handler
+   └── ts_runtime_init     installs the stack-overflow and SIGFPE handlers
    └── __ts_start          top-level statements
          └── user main()   if declared
                └── tsfn_*  user functions
-                     └── ts_print_number / ts_print_bool / ts_print_int
-                     └── ts_fmod             (imported from the C runtime)
+                     └── ts_print_number / ts_print_bool / ts_print_int / ts_print_string
+                     └── ts_fmod, ts_double_to_int, ts_int_div_zero
+                     └── ts_str_equal / ts_str_concat
+                     └── ts_*_array_new / push / get, ts_array_len
+                           (all allocated from the runtime's bump arena)
 ```
 
 ### Type checking
@@ -329,7 +354,7 @@ the object.
 care with the platform's vector-argument count — fragile and
 platform-specific. Fixed-arity functions have an unambiguous ABI.
 **Trade-off**: the runtime must be written in C and linked with `cc`, so a C
-compiler is required. The alternative — emitting the print logic in Cranelift
+compiler is required. The alternative — emitting the print logic in assembly
 itself — would need a string-conversion routine and more runtime code.
 
 ### Number printing follows JavaScript, not `printf("%g")`
@@ -385,13 +410,16 @@ rather than single files, and no file is over about 450 lines.
 **Why**: a 1,400-line file is hard to read, hard to review, and hard to
 change safely. The split is along the seams the modules already had — the
 statement forms and the precedence levels in the parser, the two rewrites,
-the runtime shim and the two halves of the code generator — so no new
-abstraction was introduced and no behaviour changed.
+and (in the assembly backend) the expressions, the statements, the frame and
+the assembler — so no new abstraction was introduced and no behaviour
+changed.
 **Trade-off**: a directory module needs `mod.rs` (or a `foo/mod.rs`), the
 methods that cross a file boundary need `pub(super)`, and the tests move into
-their own file. The Mature Module Policy applies here too: the backend was
-covered by 46 unit tests before the split, and the split is a *move*, so the
-tests are what proves it changed nothing.
+their own file. The Mature Module Policy applies here too: the `parser/`
+and `rewrite/` splits were pure moves proven by their unit tests, and the
+`backend/` directory — a wholesale replacement of the earlier Cranelift
+code generator, not a split — was written with its own regression tests
+(`backend/tests.rs`) from the start.
 
 ### Depth limits instead of a stack overflow
 **Decision**: the parser bounds how deeply expressions and statements may
@@ -512,8 +540,8 @@ also *value* semantics, deliberately distinct from a literal's adaptation:
 `4.5 as int` is `4`, where `let x: int = 4.5;` is an error.
 
 ### `&&` and `||` are implemented with basic blocks
-**Decision**: short-circuit evaluation uses three blocks and a dedicated SSA
-variable rather than eager evaluation plus masking.
+**Decision**: short-circuit evaluation uses three blocks and a dedicated
+temporary slot rather than eager evaluation plus masking.
 **Why**: eager evaluation would evaluate the right-hand side even when the
 result is already determined, so `false && (1/0 > 0)` would trap.
 **Trade-off**: more complex code generation than a bitwise `and`/`or`.

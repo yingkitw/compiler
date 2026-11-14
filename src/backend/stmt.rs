@@ -3,8 +3,7 @@
 
 use crate::ast::*;
 
-use super::asm::reg::{D, FP, X};
-use super::asm::{Cond, Mem};
+use super::asm::reg::{D, X};
 use super::Fn;
 
 /// Translate a statement list; returns true if control flow is guaranteed
@@ -70,24 +69,16 @@ pub fn gen_stmt(f: &mut Fn, s: &Stmt) -> Result<bool, String> {
                 }
             }
             f.declare_local(name, value_ty, *mutable)?;
-            // The value is in the register its type calls for; put it away.
-            let offset = f.lookup(name)?.offset;
-            let mem = Mem { base: FP, offset };
-            match value_ty {
-                Type::Number => f.asm().store_double(D(0), mem),
-                Type::String => {
-                    f.asm().store(X(0), mem);
-                    f.asm().store(X(1), Mem { base: FP, offset: offset - 8 });
-                }
-                _ => f.asm().store(X(0), mem),
-            }
+            // The value is in the register its type calls for. A numeric
+            // local is promoted into the register cache here, so a loop
+            // that assigns it keeps it in a register across its back edge.
+            let local = f.lookup(name)?;
+            f.promote(&local);
+            super::expr::store_local(f, &local);
             Ok(false)
         }
         Stmt::Func { .. } => Err("nested function declarations are not supported".into()),
         Stmt::If { cond, then, els, .. } => {
-            let (v, ct) = super::expr::gen_expr(f, cond)?;
-            super::expr::as_bool(f.asm(), v, ct)?;
-
             let then_label = f.label();
             let merge_label = f.label();
             let else_label = if els.is_empty() {
@@ -96,8 +87,7 @@ pub fn gen_stmt(f: &mut Fn, s: &Stmt) -> Result<bool, String> {
                 f.label()
             };
 
-            f.asm().cmp_imm(X(0), 0);
-            f.asm().branch_if(Cond::Eq, &else_label);
+            super::expr::branch_when(f, cond, &else_label, false)?;
 
             f.asm().place(&then_label);
             f.push_scope();
@@ -131,16 +121,22 @@ pub fn gen_stmt(f: &mut Fn, s: &Stmt) -> Result<bool, String> {
             }
         }
         Stmt::While { cond, body, .. } => {
+            // The locals the loop assigns become register residents, so
+            // the back edge does not round-trip them through memory. The
+            // scan is a hint, not a rule: anything it misses simply keeps
+            // its slot, because every load and store consults the cache.
+            let region = f.open_region();
+            for name in assigned_names(cond, body) {
+                f.promote_and_load(&name);
+            }
+
             let header_label = f.label();
             let body_label = f.label();
             let exit_label = f.label();
 
             f.asm().branch(&header_label);
             f.asm().place(&header_label);
-            let (v, ct) = super::expr::gen_expr(f, cond)?;
-            super::expr::as_bool(f.asm(), v, ct)?;
-            f.asm().cmp_imm(X(0), 0);
-            f.asm().branch_if(Cond::Eq, &exit_label);
+            super::expr::branch_when(f, cond, &exit_label, false)?;
 
             f.asm().place(&body_label);
             f.push_scope();
@@ -151,6 +147,9 @@ pub fn gen_stmt(f: &mut Fn, s: &Stmt) -> Result<bool, String> {
             }
 
             f.asm().place(&exit_label);
+            // The loop's registers go back to their slots, so the code
+            // after the loop reads what the last iteration left.
+            f.close_region(region);
             Ok(false)
         }
         Stmt::Block { stmts, .. } => {
@@ -185,7 +184,14 @@ pub fn gen_stmt(f: &mut Fn, s: &Stmt) -> Result<bool, String> {
             }
         },
         Stmt::Expr { expr, .. } => {
-            super::expr::gen_expr(f, expr)?;
+            // An assignment statement's value is dead, so when its target
+            // is a register resident the arithmetic can write the
+            // register directly.
+            if let Expr::Assign { name, value } = expr {
+                super::expr::gen_assign_stmt(f, name, value)?;
+            } else {
+                super::expr::gen_expr(f, expr)?;
+            }
             Ok(false)
         }
     }
@@ -204,4 +210,104 @@ fn default_return(f: &mut Fn) {
     }
     let epilogue = f.epilogue().clone();
     f.asm().branch(&epilogue);
+}
+
+/// The names assigned anywhere in a loop's condition or body — the locals
+/// a `while` may want to keep in registers across its back edge. The
+/// result over-approximates: a name shadowed by a `let` inside the loop
+/// is included even though its assignments target the inner variable,
+/// which only costs a register.
+fn assigned_names(cond: &Expr, body: &[Stmt]) -> Vec<String> {
+    let mut names = Vec::new();
+    collect_assigned_expr(cond, &mut names);
+    for s in body {
+        collect_assigned_stmt(s, &mut names);
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn collect_assigned_expr(e: &Expr, names: &mut Vec<String>) {
+    match e {
+        Expr::Assign { name, value } => {
+            names.push(name.clone());
+            collect_assigned_expr(value, names);
+        }
+        Expr::Bin { lhs, rhs, .. } => {
+            collect_assigned_expr(lhs, names);
+            collect_assigned_expr(rhs, names);
+        }
+        Expr::Un { expr, .. } | Expr::Cast { expr, .. } => collect_assigned_expr(expr, names),
+        Expr::Cond {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            collect_assigned_expr(cond, names);
+            collect_assigned_expr(then_expr, names);
+            collect_assigned_expr(else_expr, names);
+        }
+        Expr::BlockExpr { stmts, value } => {
+            for s in stmts {
+                collect_assigned_stmt(s, names);
+            }
+            collect_assigned_expr(value, names);
+        }
+        Expr::Array(elems) => {
+            for e in elems {
+                collect_assigned_expr(e, names);
+            }
+        }
+        Expr::Index { base, index } => {
+            collect_assigned_expr(base, names);
+            collect_assigned_expr(index, names);
+        }
+        Expr::Member { base, .. } => collect_assigned_expr(base, names),
+        Expr::Call {
+            receiver, args, ..
+        } => {
+            if let Some(r) = receiver {
+                collect_assigned_expr(r, names);
+            }
+            for a in args {
+                collect_assigned_expr(a, names);
+            }
+        }
+        Expr::Num(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Var(_) => {}
+    }
+}
+
+fn collect_assigned_stmt(s: &Stmt, names: &mut Vec<String>) {
+    match s {
+        Stmt::Let { init, .. } => {
+            if let Some(e) = init {
+                collect_assigned_expr(e, names);
+            }
+        }
+        Stmt::If { cond, then, els, .. } => {
+            collect_assigned_expr(cond, names);
+            for s in then.iter().chain(els.iter()) {
+                collect_assigned_stmt(s, names);
+            }
+        }
+        Stmt::While { cond, body, .. } => {
+            collect_assigned_expr(cond, names);
+            for s in body {
+                collect_assigned_stmt(s, names);
+            }
+        }
+        Stmt::Block { stmts, .. } => {
+            for s in stmts {
+                collect_assigned_stmt(s, names);
+            }
+        }
+        Stmt::Expr { expr, .. } => collect_assigned_expr(expr, names),
+        Stmt::Return { value, .. } => {
+            if let Some(e) = value {
+                collect_assigned_expr(e, names);
+            }
+        }
+        Stmt::Func { .. } => {}
+    }
 }

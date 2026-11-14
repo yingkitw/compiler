@@ -32,6 +32,11 @@ pub enum Cond {
     Mi,
     /// Below or equal: the floating-point "less than or equal".
     Ls,
+    /// Plus (`N` clear): the negation of `Mi`, true on the unordered case.
+    Pl,
+    /// Unsigned higher (`C` set, `Z` clear): the negation of `Ls`, true on
+    /// the unordered case.
+    Hi,
 }
 
 impl fmt::Display for Cond {
@@ -45,6 +50,8 @@ impl fmt::Display for Cond {
             Cond::Ge => "ge",
             Cond::Mi => "mi",
             Cond::Ls => "ls",
+            Cond::Pl => "pl",
+            Cond::Hi => "hi",
         };
         f.write_str(name)
     }

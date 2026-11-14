@@ -2,10 +2,11 @@
 
 use crate::ast::*;
 
-use super::super::asm::reg::{D, V, X};
+use super::super::asm::reg::{D, FP, X};
+use super::super::asm::Mem;
 use super::super::{Fn, Val};
 use super::array;
-use super::{gen_expr, gen_expr_as, load_temp, store_temp};
+use super::{gen_expr, gen_expr_as, store_temp};
 
 #[derive(Clone, Copy)]
 enum RegPlan {
@@ -61,8 +62,14 @@ pub(super) fn gen_call(
     }
 
     let mark = f.temp_mark();
-    let mut evaluated = Vec::new();
-    for (arg, ty) in args.iter().zip(sig.params.iter()) {
+    let n = args.len();
+    // Every argument but the last is parked in a frame slot, because
+    // evaluating a later argument may clobber any register. The last one
+    // stays where its evaluation left it — `x0`/`d0` — and is moved
+    // straight to its argument register; every earlier argument gets a
+    // lower register, so loading them afterwards cannot clobber it.
+    let mut evaluated: Vec<(Option<i32>, Type)> = Vec::new();
+    for (i, (arg, ty)) in args.iter().zip(sig.params.iter()).enumerate() {
         let (_, at) = gen_expr_as(f, arg, Some(*ty))?;
         if at != *ty {
             return Err(format!(
@@ -70,9 +77,13 @@ pub(super) fn gen_call(
                 name, ty, at
             ));
         }
-        let slot = f.temp_for(*ty);
-        store_temp(f.asm(), slot, *ty);
-        evaluated.push((slot, *ty));
+        if i + 1 == n {
+            evaluated.push((None, *ty));
+        } else {
+            let slot = f.temp_for(*ty);
+            store_temp(f.asm(), slot, *ty);
+            evaluated.push((Some(slot), *ty));
+        }
     }
 
     let mut plan = Vec::new();
@@ -95,32 +106,50 @@ pub(super) fn gen_call(
         }
     }
 
+    // Reverse, so the last argument's register is filled first and the
+    // earlier ones — in lower registers — are loaded after it.
     for ((slot, ty), slot_plan) in evaluated.iter().zip(plan.iter()).rev() {
-        match (ty, slot_plan) {
-            (Type::Number, RegPlan::Num(n)) => {
-                load_temp(f.asm(), *slot, Type::Number);
-                f.asm().fmov_x_from_d(X(0), D(0));
-                f.asm().mov_v_from_x(V(*n), X(0));
+        match (slot, ty, slot_plan) {
+            (None, Type::Number, RegPlan::Num(vi)) => {
+                if *vi == 0 {
+                    // The argument is already in `d0`, the low half of `v0`.
+                } else {
+                    f.asm().fmov_d_from_d(D(*vi), D(0));
+                }
             }
-            (Type::String, RegPlan::String(x)) => {
-                load_temp(f.asm(), *slot, Type::String);
-                f.asm().mov_reg(X(*x), X(0));
-                f.asm().mov_reg(X(*x + 1), X(1));
+            (None, Type::String, RegPlan::String(x)) => {
+                if *x != 0 {
+                    f.asm().mov_reg(X(*x), X(0));
+                    f.asm().mov_reg(X(*x + 1), X(1));
+                }
             }
-            (_, RegPlan::Int(x)) => {
-                load_temp(f.asm(), *slot, *ty);
-                f.asm().mov_reg(X(*x), X(0));
+            (None, _, RegPlan::Int(x)) => {
+                if *x != 0 {
+                    f.asm().mov_reg(X(*x), X(0));
+                }
+            }
+            (Some(slot), Type::Number, RegPlan::Num(vi)) => {
+                // `dN` is the low half of `vN`, so the load lands in the
+                // argument register itself.
+                f.asm()
+                    .load_double(D(*vi), Mem { base: FP, offset: *slot });
+            }
+            (Some(slot), Type::String, RegPlan::String(x)) => {
+                f.asm().load(X(*x), Mem { base: FP, offset: *slot });
+                f.asm()
+                    .load(X(*x + 1), Mem { base: FP, offset: *slot - 8 });
+            }
+            (Some(slot), _, RegPlan::Int(x)) => {
+                f.asm().load(X(*x), Mem { base: FP, offset: *slot });
             }
             _ => unreachable!("plan matches argument type"),
         }
     }
 
     f.asm().call(&Fn::symbol(&format!("tsfn_{}", name)));
-    if sig.ret == Type::Number {
-        f.asm().fmov_d_from_v(D(0), V(0));
-    }
     f.release_temps(mark);
     match sig.ret {
+        // A `number` result arrives in `v0`, whose low half *is* `d0`.
         Type::Void => Ok((Val::Int, Type::Void)),
         t => Ok((Val::of(t), t)),
     }

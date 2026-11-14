@@ -33,6 +33,7 @@ use crate::ast::*;
 pub mod asm;
 pub mod expr;
 mod function;
+pub mod regs;
 pub mod runtime;
 pub mod stmt;
 

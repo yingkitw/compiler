@@ -14,10 +14,6 @@ pub struct X(pub u8);
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct D(pub u8);
 
-/// A vector register (`v0`–`v31`); a double lives in its low half.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct V(pub u8);
-
 /// The frame pointer (`x29`).
 pub const FP: X = X(29);
 /// The first register of the argument sequence.
@@ -32,11 +28,5 @@ impl fmt::Display for X {
 impl fmt::Display for D {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "d{}", self.0)
-    }
-}
-
-impl fmt::Display for V {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "v{}", self.0)
     }
 }

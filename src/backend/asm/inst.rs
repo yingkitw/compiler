@@ -7,7 +7,7 @@
 
 use std::fmt::Write as _;
 
-use super::reg::{D, V, X};
+use super::reg::{D, X};
 use super::{Asm, Cond, Label, Mem};
 
 impl Asm {
@@ -39,31 +39,30 @@ impl Asm {
         let _ = writeln!(self.text, "\tldr\t{}, ={}", dst, imm);
     }
 
-    /// Move the bits of a double into a general register.
-    pub fn fmov_x_from_d(&mut self, dst: X, src: D) {
-        let _ = writeln!(self.text, "\tfmov\t{}, {}", dst, src);
-    }
-
     /// Move a double into another double register.
     pub fn fmov_d_from_d(&mut self, dst: D, src: D) {
         let _ = writeln!(self.text, "\tfmov\t{}, {}", dst, src);
     }
 
-    /// Move a double from a vector argument register into a D register.
-    pub fn fmov_d_from_v(&mut self, dst: D, src: V) {
-        let _ = writeln!(self.text, "\tmov\t{}, {}.d[0]", dst, src);
+    /// `fmov` a double from an immediate the hardware can encode:
+    /// ±(1.mmmm)₂ × 2ᴱ, four mantissa bits and E in −3…4 (plus ±0.0).
+    /// Returns false when the value needs the literal pool instead.
+    pub fn fmov_d_imm(&mut self, dst: D, value: f64) -> bool {
+        let bits = value.to_bits();
+        let exp = ((bits >> 52) & 0x7FF) as i32 - 1023;
+        let encodable = bits == 0
+            || bits == 0x8000_0000_0000_0000
+            || (bits & 0x0000_FFFF_FFFF_FFFF == 0 && (-3..=4).contains(&exp));
+        if !encodable {
+            return false;
+        }
+        let _ = writeln!(self.text, "\tfmov\t{}, #{}", dst, value);
+        true
     }
 
     /// Move the bits of a general register into a double.
     pub fn fmov_d_from_x(&mut self, dst: D, src: X) {
         let _ = writeln!(self.text, "\tfmov\t{}, {}", dst, src);
-    }
-
-    /// Put a general register into a vector register — the floating-point
-    /// argument registers are vector registers, and a double lives in their
-    /// low half.
-    pub fn mov_v_from_x(&mut self, dst: V, src: X) {
-        let _ = writeln!(self.text, "\tmov\t{}.d[0], {}", dst, src);
     }
 
     // --- the stack -----------------------------------------------------
@@ -79,6 +78,26 @@ impl Asm {
     /// Release a frame.
     pub fn pop_frame(&mut self, size: i32) {
         let _ = writeln!(self.text, "\tldp\tx29, x30, [sp], #{}", size);
+    }
+
+    /// Store a pair of general registers.
+    pub fn store_pair_x(&mut self, a: X, b: X, mem: Mem) {
+        let _ = writeln!(self.text, "\tstp\t{}, {}, {}", a, b, mem);
+    }
+
+    /// Load a pair of general registers.
+    pub fn load_pair_x(&mut self, a: X, b: X, mem: Mem) {
+        let _ = writeln!(self.text, "\tldp\t{}, {}, {}", a, b, mem);
+    }
+
+    /// Store a pair of floating-point registers.
+    pub fn store_pair_d(&mut self, a: D, b: D, mem: Mem) {
+        let _ = writeln!(self.text, "\tstp\t{}, {}, {}", a, b, mem);
+    }
+
+    /// Load a pair of floating-point registers.
+    pub fn load_pair_d(&mut self, a: D, b: D, mem: Mem) {
+        let _ = writeln!(self.text, "\tldp\t{}, {}, {}", a, b, mem);
     }
 
     /// Return from a function.
@@ -131,15 +150,17 @@ impl Asm {
         let _ = writeln!(self.text, "\tsdiv\t{}, {}, {}", dst, lhs, rhs);
     }
 
-    /// Signed remainder: `dst = dividend % divisor` (uses `x2` as scratch).
+    /// Signed remainder: `dst = dividend % divisor`. The quotient goes
+    /// through `x2`, so the dividend and the divisor may live in any
+    /// registers — including `dst` itself.
     pub fn srem(&mut self, dst: X, dividend: X, divisor: X) {
-        let scratch = X(2);
-        let _ = writeln!(self.text, "\tmov\t{}, {}", scratch, dividend);
-        let _ = writeln!(self.text, "\tsdiv\t{}, {}, {}", dst, dividend, divisor);
+        let q = X(2);
+        let _ = writeln!(self.text, "\tsdiv\t{}, {}, {}", q, dividend, divisor);
+        // dst = dividend − quotient × divisor
         let _ = writeln!(
             self.text,
             "\tmsub\t{}, {}, {}, {}",
-            dst, dst, divisor, scratch
+            dst, q, divisor, dividend
         );
     }
 

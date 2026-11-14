@@ -24,22 +24,28 @@ tsc <input.ts> [-o <output>] [-c]
 
 - `CC` chooses the C compiler used at link time (default: `cc`).
 - `CFLAGS` supplies extra flags for that compiler, split on whitespace.
+- `TSC_DUMP_ASM=<path>` writes the generated assembly to `<path>` before
+  linking — the inspection aid the assembly backend makes nearly free.
 
-Both are the conventional ones, and they are what makes the sanitizers
+All three are conventional, and `CC`/`CFLAGS` are what makes the sanitizers
 reachable: `CC=clang CFLAGS="-fsanitize=address,undefined"` links the
 runtime with the sanitizers.
 
 **Behaviour**
 - Success: prints the output path to stdout, exits `0`.
 - Compile error: prints `error: <message>` to stderr, exits `1`.
-- Linker failure: prints `error: linker failed`, exits `1`.
+- Assembler/linker failure: prints `error: the assembler failed` or
+  `error: linker failed`, exits `1`.
 - Usage error (unknown flag, missing or repeated input): prints usage to stderr,
   exits `2`.
 
 **Requirements**
 - A C compiler must be available on `PATH` — `cc` by default, or whatever
-  `CC` names (linking only; `-c` does not need one).
-- The compiler targets the host platform (`Triple::host()`).
+  `CC` names. It assembles the emitted `.s` for `-c` and links the binary
+  otherwise, so both modes need one (before the assembly backend, `-c` did
+  not).
+- The compiler targets the host platform; the assembly it emits is AArch64
+  (Apple silicon) today, assembled and linked by the system `cc`.
 
 **Debug line information**
 
@@ -57,9 +63,9 @@ runtime with the sanitizers.
 | Type | Representation | Notes |
 |---|---|---|
 | `number` | IEEE-754 double (`f64`) | The default type of a numeric literal |
-| `int` | 64-bit signed integer (`i64`) | Integer division truncates toward zero; arithmetic wraps (there is no overflow check); division by zero or overflow reports `error: integer division by zero or overflow` and exits 1 |
+| `int` | 64-bit signed integer (`i64`) | Integer division truncates toward zero; arithmetic wraps, including `i64::MIN / -1` (there is no overflow check). Division by zero reports `error: integer division by zero or overflow` and exits 1; `%` by zero currently yields the dividend (the AArch64 `srem` result) rather than an error — a known divergence, see TODO |
 | `boolean` | 8-bit integer (`i8`), 0 = false, 1 = true | |
-| `string` | pointer + byte length (two pointers in registers) | Literals live in read-only data; `+` concatenates into a bump arena |
+| `string` | pointer in `x0` + byte length in `x1` | Literals live in read-only data; `+` concatenates into a bump arena |
 | `number[]` / `boolean[]` | pointer to `{ data, len, cap }` in x0 | Literals and `push` allocate from the bump arena; out-of-range indices abort with a runtime diagnostic |
 | `void` | no value | The return type of a function with no value; not allowed as a variable or parameter type |
 
@@ -74,13 +80,14 @@ initializer. Annotations are mandatory for parameters.
 - **Comments**: `// line comment` and `/* block comment */` (block comments do not
   nest).
 - **Keywords**: `let`, `const`, `function`, `if`, `else`, `while`, `for`,
-  `as`, `return`, `true`, `false`.
-- **Operators**: `+=`, `-=`, `*=`, `/=`, `%=`, `++` and `--` are tokens of
-  their own; they are sugar for the assignments they stand for (see
-  *Statements*).
-- **Type names**: `number`, `int`, `boolean`, `void`. These are ordinary
-  identifiers — `let number = 5;` is legal — and they name a type only when
-  they appear in a type-annotation position.
+  `as`, `of`, `return`, `true`, `false`.
+- **Operators**: `+=`, `-=`, `*=`, `/=`, `%=`, `&&=`, `||=`, `++` and `--`
+  are tokens of their own; the compound assignments are sugar for the
+  assignments they stand for (see *Statements*).
+- **Type names**: `number`, `int`, `boolean`, `string`, `void`, plus the
+  array types `number[]` and `boolean[]`. These are ordinary identifiers —
+  `let number = 5;` is legal — and they name a type only when they appear in
+  a type-annotation position.
 
 ### Grammar
 
@@ -92,16 +99,18 @@ statement    ::= letDecl
                | ifStmt
                | whileStmt
                | forStmt
+               | forOfStmt
                | returnStmt
                | block
+               | stepStmt
                | exprStmt ;
 
-letDecl      ::= ("let" | "const") IDENT (":" type)? ("=" expr)? ";" ;
+letDecl      ::= ("let" | "const") IDENT (":" valueType)? ("=" expr)? ";" ;
                (* at least one of the type annotation and the initializer is required *)
 
 funcDecl     ::= "function" IDENT "(" params? ")" (":" type)? block ;
 params       ::= param ("," param)* ;
-param        ::= IDENT ":" type ;
+param        ::= IDENT ":" valueType ;
 
 ifStmt       ::= "if" "(" expr ")" stmtOrBlock ("else" stmtOrBlock)? ;
 whileStmt    ::= "while" "(" expr ")" stmtOrBlock ;
@@ -111,15 +120,22 @@ forInit      ::= letDecl | expr ";" | ";" ;
                   its own ";", an expression is followed by one, and a lone
                   ";" means there is no init. An absent condition is `true`;
                   an absent step (nothing before the ")") is no step *)
+forOfStmt    ::= "for" "(" ("let" | "const") IDENT "of" expr ")" stmtOrBlock ;
+               (* the iterable must be number[] or boolean[]; it desugars to
+                  a hidden binding, .length, an index, and a while loop *)
 returnStmt   ::= "return" expr? ";" ;
 block        ::= "{" statement* "}" ;
 stmtOrBlock  ::= block | statement ;
 exprStmt     ::= expr ";" ;
 stepStmt     ::= ("++" | "--") IDENT ";" ;   (* the prefix form *)
-               (* the postfix form is `expr ("++" | "--") ";"` *)
+               (* the postfix form is `IDENT ("++" | "--") ";"` *)
 
 expr         ::= assignment ;
-assignment   ::= orExpr ("=" assignment)? ;   (* LHS must be a variable *)
+assignment   ::= conditional (assignOp assignment)? ;   (* LHS must be a variable *)
+assignOp     ::= "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&&=" | "||=" ;
+               (* every compound form is sugar: `x += e` is `x = x + e`,
+                  `x &&= e` is `x = x && e` *)
+conditional  ::= orExpr ("?" assignment ":" conditional)? ;   (* right-assoc *)
 orExpr       ::= andExpr ("||" andExpr)* ;
 andExpr      ::= equality ("&&" equality)* ;
 equality     ::= comparison (("==" | "!=") comparison)* ;
@@ -133,15 +149,30 @@ castTail     ::= (("*" | "/" | "%") unary)* (("+" | "-") factor)* ;
 term         ::= factor (("+" | "-") factor)* ;
 factor       ::= unary (("*" | "/" | "%") unary)* ;
 unary        ::= ("!" | "-") unary | call ;
-call         ::= primary ("(" args? ")")* ;
-primary      ::= NUMBER | "true" | "false" | IDENT | "(" expr ")" ;
+call         ::= primary ( "(" args? ")" | "[" expr "]" | "." IDENT )* ;
+               (* `(...)` is a call, `[e]` indexes an array, `.ident` is a
+                  member: `.length` and the `push` method *)
+primary      ::= NUMBER | STRING | "true" | "false" | IDENT
+               | "(" expr ")" | "[" args? "]" | blockExpr ;
+               (* "[" args? "]" is an array literal; the element types must
+                  agree; "[]" needs a type annotation on its binding *)
+blockExpr    ::= "{" statement+ "}" ;
+               (* in expression position: the last statement must be an
+                  expression statement, and the block cannot be empty — the
+                  final expression is the block's value *)
 args         ::= expr ("," expr)* ;
-type         ::= "number" | "int" | "boolean" | "void" ;
+valueType    ::= "number" | "int" | "boolean" | "string"
+               | ("number" | "boolean") "[]" ;
+               (* everything a variable can hold; `void` is a return type
+                  only, and arrays are number[] and boolean[] only *)
+type         ::= valueType | "void" ;
+               (* the return-type position may name void; the target of `as`
+                  must be numeric — boolean and void casts are errors *)
 ```
 
 **Operator precedence**, loosest to tightest: assignment → `?:` → `||` → `&&` →
-equality → relational → additive → multiplicative (`*`, `/`, `%`) → unary →
-call → primary.
+equality → relational (`<` … `>=` and `as`) → additive → multiplicative
+(`*`, `/`, `%`) → unary → call / index / member → primary.
 Assignment is right-associative; all binary operators are left-associative.
 
 **Not supported**: `do`, `switch`, `break`, `continue`, `throw`, `try`, `new`,
@@ -162,8 +193,8 @@ JavaScript's `%`.
   called before their declaration appears in the file, and may recurse. Function
   declarations are not allowed nested inside another function body.
 - **`if` / `else`** — the else branch is optional. The condition must be a
-  `boolean` or a `number`.
-- **`while`** — the condition must be a `boolean` or a `number`.
+  `boolean`, `number`, or `int`.
+- **`while`** — the condition must be a `boolean`, `number`, or `int`.
 - **`for`** — C-style: `for (init; condition; step) body`. The init may be a
   `let` or `const` declaration, an assignment, or absent; the condition may be
   absent (`true`); the step may be absent. Each of the three parts is
@@ -174,7 +205,7 @@ JavaScript's `%`.
   declare the same name, and the init's variable is scoped to the loop.
   `break` and `continue` do not exist, so nothing in a loop body can target
   the loop rather than the `while` it becomes.
-  The condition must be a `boolean` or a `number`.
+  The condition must be a `boolean`, `number`, or `int`.
 - **`for-of`** — `for (let x of iterable)` or `for (const x of iterable)`. The
   iterable must be a `number[]` or `boolean[]`. Each iteration binds `x` to the
   next element. It desugars to a hidden array binding, a `length` counter, an
@@ -215,7 +246,7 @@ JavaScript's `%`.
 
 | Function | Signature | Behaviour |
 |---|---|---|
-| `print` | `print(number)` / `print(int)` / `print(boolean)` | Prints the value followed by a newline |
+| `print` | `print(number)` / `print(int)` / `print(boolean)` / `print(string)` | Prints the value followed by a newline |
 
 - `print` is reserved: it cannot be redefined.
 - Numbers print exactly like JavaScript's `Number.prototype.toString`: the
@@ -224,7 +255,9 @@ JavaScript's `%`.
   otherwise (`42`, `12.56636`, `0.3333333333333333`, `1e+21`, `1e-7`).
   `NaN` prints as `NaN`, division by zero as `Infinity`, and `-0` as `0`.
 - Booleans print as `true` / `false`.
-- There is no `print` overload for `void`; printing a void expression is an error.
+- Strings print as their raw UTF-8 bytes followed by a newline.
+- There is no `print` overload for `void` or for arrays; printing either is
+  an error.
 
 ### Tail-call elimination
 
@@ -377,6 +410,11 @@ values computed do not change.
 - Equality (`==`, `!=`) requires both operands to have the *same* type
   (`number`, `int`, `boolean`, or `string`) and yields `boolean`. For
   `string`, equality is bytewise on the UTF-8 payload (length must match).
+- Arrays: a literal `[e, …]` may hold only `number` or `boolean` literals,
+  all of the same kind; `[]` is allowed only where the binding's annotation
+  supplies the element type. Indexing `a[i]` requires `i` to be an `int`
+  and yields the element type; `a.length` yields an `int`; `a.push(x)`
+  requires `x` to have the element type and yields `void`.
 - The conditional `cond ? then : else` evaluates `cond` (with the same
   truthiness rules as `if`), then **only one** of `then` and `else`. Both
   branches must have the same type; mixing `number` and `int` is an error.
@@ -459,51 +497,100 @@ assignment, arithmetic or relational type errors, comparing mismatched types,
 casting a non-numeric type, using a void value where a value is required,
 assigning to a `const`, undefined variables, undefined functions, wrong
 argument counts, wrong argument types, functions that don't return on all
-paths, nested function declarations, `print` of a void value, `void` used as
-a variable or parameter type, expressions nested deeper than the compiler's
-limit, and redefining `print` or `main` incorrectly.
+paths, nested function declarations, duplicate function declarations, `print`
+of a void value or an array, `void` used as a variable or parameter type,
+array literals that mix element kinds or hold non-literals, a non-`int` array
+index, an unknown field or method, expressions nested deeper than the
+compiler's limit, and redefining `print` or `main` incorrectly.
 
 ## Runtime ABI
 
-The compiler emits a relocatable object file and links it with a small C
-translation unit containing five functions:
+The compiler emits assembly text; the system C compiler assembles it and
+links it with a small C translation unit. The functions the generated code
+imports, by group:
 
 ```c
+/* printing (JavaScript's Number::toString for doubles) */
 void ts_print_number(double x);
 void ts_print_bool(signed char x);
 void ts_print_int(long long x);
+void ts_print_string(const char *data, unsigned long len);
+
+/* arithmetic the hardware does not offer */
+double ts_fmod(double x, double y);       /* C fmod == JavaScript's % */
+long long ts_double_to_int(double x);     /* truncate; NaN→0; saturate */
+void ts_int_div_zero(void);               /* the int `/` divisor-zero path */
+
+/* strings and arrays, allocated from one bump arena */
+unsigned char ts_str_equal(const char *a, unsigned long alen,
+                           const char *b, unsigned long blen);
+struct { char *data; unsigned long len; }
+ts_str_concat(const char *a, unsigned long alen,
+              const char *b, unsigned long blen);
+struct number_array *ts_number_array_new(unsigned long cap);
+void ts_number_array_push(struct number_array *a, double v);
+double ts_number_array_get(struct number_array *a, long long i);
+struct bool_array *ts_bool_array_new(unsigned long cap);
+void ts_bool_array_push(struct bool_array *a, signed char v);
+signed char ts_bool_array_get(struct bool_array *a, long long i);
+unsigned long ts_array_len(struct number_array *a);   /* bool arrays too */
+
 void ts_runtime_init(void);
-double ts_fmod(double x, double y);
 ```
 
 `ts_runtime_init` is called first by the generated C `main`. It installs
-handlers on an alternate signal stack: a `SIGSEGV` handler, so that unbounded
-recursion exhausting the stack is reported as
+handlers on an alternate signal stack: a `SIGSEGV` handler, so that
+unbounded recursion exhausting the stack is reported as
 
 ```
 error: maximum recursion depth exceeded
 ```
 
-and a `SIGFPE`/`SIGILL` handler, so that an integer division by zero — or
-`i64::MIN / -1`, which the hardware also refuses — is reported as
+and a `SIGFPE`/`SIGILL` handler, so that a trapping integer division is
+reported as
 
 ```
 error: integer division by zero or overflow
 ```
 
 both on stderr with exit status 1, instead of killing the process. Output
-printed before either is preserved. The language has no pointers, so the only
-fault a compiled program can take besides those is a hardware one.
+printed before either is preserved. The language has no pointers, so the
+only fault a compiled program can take besides those is a hardware one.
 
-These are imported by the generated code as ordinary external symbols. At the C
-ABI, `double` is passed and returned in `v0`/`d0`, booleans in `x0`, and `int` as
-`long long` in `x0`. `ts_fmod` exists because the host has no float remainder
-instruction in the path we emit; it is C's `fmod`, which truncates toward zero
-and takes the sign of the dividend — JavaScript's `%`.
+Two integer-division details are defined rather than left to the hardware:
 
-User-declared functions are exported as `tsfn_<name>`; the synthetic top-level
-function is `__ts_start`; the C entry point is `main`. All calls use the
-platform's default calling convention (`CallConv::triple_default`).
+- **AArch64 `sdiv` does not trap** — it returns 0 — so the generated code
+  checks the divisor itself and calls `ts_int_div_zero`, which prints the
+  message above and exits 1.
+- **`i64::MIN / -1` wraps** to `i64::MIN`, like every other integer
+  overflow: there is no overflow check anywhere in `int` arithmetic. The
+  hardware performs it without trapping. Integer `%` by zero likewise takes
+  the hardware's answer — the dividend — because `srem` neither traps nor
+  is guarded today; that divergence from the `/` rule is a recorded TODO.
+
+These are imported by the generated code as ordinary external symbols. At
+the C ABI (AAPCS64 on arm64), `double` is passed and returned in `v0`/`d0`,
+integers and pointers in `x0`/`x1`/…, and a `string` occupies two registers
+(`x0` data, `x1` byte length). `ts_fmod` exists because the AArch64 ISA has
+no float remainder instruction in the path we emit; it is C's `fmod`, which
+truncates toward zero and takes the sign of the dividend — JavaScript's `%`.
+
+The generated code keeps its locals in the callee-saved registers
+(`d8`–`d13`, `x19`–`x24`) where it can, and saves and restores the ones it
+uses around the function body — so it honours the platform's callee-saved
+discipline, and an object produced with `-c` links against other C code
+without surprises.
+
+Strings and arrays allocate from a single program-lifetime **bump arena**
+(256 KiB) in the runtime. Nothing is ever reclaimed; exceeding the arena
+reports `error: string allocation limit exceeded` and exits 1. String
+literals and array element data live elsewhere: literals in the object's
+read-only data, growth by doubling. An out-of-range array index reports
+`error: array index out of bounds` and exits 1.
+
+User-declared functions are exported as `tsfn_<name>`; the synthetic
+top-level function is `__ts_start`; the C entry point is `main`. All calls
+follow the platform's default C calling convention.
 
 Runtime calls use `bl` to linker-resolved symbols with the platform's usual
 relocation rules, which link cleanly on macOS arm64 and Linux ELF when built

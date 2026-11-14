@@ -121,9 +121,9 @@ void ts_int_div_zero(void) {
     _exit(1);
 }
 
-/* Remainder for doubles. Cranelift has no float remainder instruction, so
- * this calls libm. C's fmod truncates toward zero and takes the sign of the
- * dividend, which is exactly what JavaScript's % does. */
+/* Remainder for doubles. The AArch64 ISA has no float remainder
+ * instruction, so this calls libm. C's fmod truncates toward zero and takes
+ * the sign of the dividend, which is exactly what JavaScript's % does. */
 double ts_fmod(double x, double y) { return fmod(x, y); }
 
 /* Convert a double to an int: truncate toward zero, with NaN becoming zero
@@ -290,10 +290,14 @@ static void ts_on_sigsegv(int sig, siginfo_t *info, void *ctx) {
     _exit(1);
 }
 
-/* An integer division by zero traps: the hardware raises SIGFPE on some
- * platforms, and Cranelift raises SIGILL with an explicit check on others.
- * Float division does not trap — it produces Infinity, like JavaScript's — so
- * this only ever fires for the `int` type. */
+/* An integer division by zero: AArch64 `sdiv` does NOT trap (it returns
+ * zero), so the generated code checks the divisor itself and calls
+ * ts_int_div_zero. This SIGFPE handler covers platforms whose hardware does
+ * trap, and the SIGILL registration below is vestigial — it dates from the
+ * Cranelift backend, whose divide-by-zero check trapped with an illegal
+ * instruction; the hand-written assembly emits none. Float division does
+ * not trap anywhere — it produces Infinity, like JavaScript's — so this
+ * only ever fires for the `int` type. */
 static void ts_on_sigfpe(int sig, siginfo_t *info, void *ctx) {
     (void)sig; (void)info; (void)ctx;
     fflush(stdout);
@@ -322,9 +326,10 @@ void ts_runtime_init(void) {
     sa.sa_sigaction = ts_on_sigfpe;
     sigemptyset(&sa.sa_mask);
     sigaction(SIGFPE, &sa, NULL);
-    /* SIGILL is how Cranelift's own divide-by-zero check traps. A generated
-     * program has no other illegal instruction, so the only trap it can take
-     * is a division that cannot be performed. */
+    /* SIGILL is how the Cranelift backend's divide-by-zero check trapped.
+     * The hand-written assembly emits no illegal instructions, so this
+     * registration never fires today; it is kept because removing it buys
+     * nothing and the handler is the same one. */
     sigaction(SIGILL, &sa, NULL);
 }
 "#;

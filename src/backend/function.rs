@@ -6,6 +6,7 @@ use crate::ast::*;
 
 use super::asm::reg::{D, FP, X};
 use super::asm::{Asm, Label, Mem};
+use super::regs::{self, Cache};
 use super::stmt;
 use super::{type_slots, FnSig, Local};
 
@@ -31,6 +32,8 @@ pub struct Fn<'a> {
     temps: i32,
     /// The next free temporary.
     next_temp: i32,
+    /// The locals cached in callee-saved registers.
+    cache: Cache,
     /// The label of the function's epilogue, where its returns go.
     epilogue: Label,
     /// The next rodata label for a string literal in this function.
@@ -57,6 +60,7 @@ impl<'a> Fn<'a> {
             next_local: 0,
             temps: 0,
             next_temp: 0,
+            cache: Cache::new(),
             epilogue,
             next_string: 0,
         }
@@ -79,14 +83,17 @@ impl<'a> Fn<'a> {
         }
     }
 
-    /// The frame's size in bytes: the locals, the temporaries, and room for
-    /// the outgoing arguments of a call.
+    /// The frame's size in bytes: the locals, the temporaries, room for
+    /// the outgoing arguments of a call, and the callee-saved registers
+    /// the function's register cache uses.
     fn frame_size(&self) -> i32 {
         let locals = self.locals * 8;
         let temps = self.temps * 8;
         // The runtime's widest call takes two numbers.
         let outgoing = 16;
-        ((locals + temps + outgoing) + 15) / 16 * 16
+        let (fp, gp) = self.cache.used();
+        let saves = (fp.len() + gp.len()) as i32 * 8;
+        ((locals + temps + outgoing + saves) + 15) / 16 * 16
     }
 
     /// The whole function: the label, the prologue, the body, the epilogue.
@@ -96,6 +103,9 @@ impl<'a> Fn<'a> {
     /// first, or the body would run with the caller's frame pointer.
     pub fn finish(&mut self) -> String {
         let frame = self.frame_size();
+        // The bytes below the frame pointer the locals and temporaries
+        // occupy; the callee-save area starts under them.
+        let used_bytes = (self.locals + self.temps) * 8;
         let body = self.asm.take();
 
         let mut head = Asm::new("head");
@@ -103,11 +113,13 @@ impl<'a> Fn<'a> {
         head.line(&format!(".globl {}", Fn::symbol(&self.name)));
         head.place_symbol(&Fn::symbol(&self.name));
         head.push_frame(frame);
+        save_callee_saved(&mut head, &self.cache, used_bytes);
         let mut text = head.take();
         text.push_str(&body);
 
         let mut tail = Asm::new("tail");
         tail.place(&self.epilogue);
+        restore_callee_saved(&mut tail, &self.cache, used_bytes);
         if frame > 0 {
             tail.pop_frame(frame);
         }
@@ -143,36 +155,47 @@ impl<'a> Fn<'a> {
         Ok(())
     }
 
-    /// Copy the incoming arguments into the parameters' slots.
+    /// Copy the incoming arguments into the parameters' slots — or into a
+    /// callee-saved register, when the parameter is promoted.
     fn bind_parameters(&mut self) -> Result<(), String> {
         let params = self.params.clone();
         let mut int_reg = 0;
         let mut num_reg = 0;
         for (name, ty) in params {
             self.declare_local(&name, ty, true)?;
-            let offset = self.lookup(&name)?.offset;
-            match ty {
-                Type::Number => {
-                    // On AArch64 the argument is in `vN`, which aliases `dN`.
-                    self.asm
-                        .store_double(D(num_reg), Mem { base: FP, offset });
+            let local = self.lookup(&name)?;
+            // A parameter is assigned exactly once, by the caller, so it
+            // is a natural resident of the register cache.
+            self.promote(&local);
+            match self.cached(&local) {
+                Some((reg, true)) => {
+                    self.asm.fmov_d_from_d(D(reg), D(num_reg));
                     num_reg += 1;
                 }
-                Type::String => {
-                    self.asm
-                        .store(X(int_reg), Mem { base: FP, offset });
-                    self.asm
-                        .store(X(int_reg + 1), Mem { base: FP, offset: offset - 8 });
-                    int_reg += 2;
-                }
-                Type::NumberArray | Type::BooleanArray => {
-                    self.asm.store(X(int_reg), Mem { base: FP, offset });
+                Some((reg, false)) => {
+                    self.asm.mov_reg(X(reg), X(int_reg));
                     int_reg += 1;
                 }
-                _ => {
-                    self.asm.store(X(int_reg), Mem { base: FP, offset });
-                    int_reg += 1;
-                }
+                None => match ty {
+                    Type::Number => {
+                        // On AArch64 the argument is in `vN`, which aliases `dN`.
+                        self.asm
+                            .store_double(D(num_reg), Mem { base: FP, offset: local.offset });
+                        num_reg += 1;
+                    }
+                    Type::String => {
+                        self.asm
+                            .store(X(int_reg), Mem { base: FP, offset: local.offset });
+                        self.asm
+                            .store(X(int_reg + 1), Mem { base: FP, offset: local.offset - 8 });
+                        int_reg += 2;
+                    }
+                    _ => {
+                        self.asm
+                            .store(X(int_reg), Mem { base: FP, offset: local.offset });
+                        int_reg += 1;
+                    }
+                },
             }
         }
         Ok(())
@@ -208,9 +231,13 @@ impl<'a> Fn<'a> {
         self.scopes.push(HashMap::new());
     }
 
-    /// Pop a scope.
+    /// Pop a scope. The locals it declared can no longer be named, so any
+    /// cached values of them are dead and their registers are freed.
     pub fn pop_scope(&mut self) {
-        self.scopes.pop();
+        if let Some(scope) = self.scopes.pop() {
+            let slots: Vec<i32> = scope.values().map(|l| l.offset).collect();
+            self.cache.drop_slots(&slots);
+        }
     }
 
     /// Declare a local: it gets a frame slot.
@@ -267,6 +294,89 @@ impl<'a> Fn<'a> {
     /// Release the temporaries allocated since `mark`.
     pub fn release_temps(&mut self, mark: i32) {
         self.next_temp = mark;
+    }
+
+    /// Promote a local and load its slot's value into the register — how
+    /// a loop makes an assigned local register-resident before its first
+    /// test. A local that is already a resident keeps its register: the
+    /// value in it is current, and the slot may never have been written.
+    /// A name that does not resolve (it is declared inside the loop's
+    /// body) is skipped: its `let` promotes it itself.
+    pub fn promote_and_load(&mut self, name: &str) {
+        let Ok(local) = self.lookup(name) else { return };
+        if self.cached(&local).is_some() {
+            return;
+        }
+        self.promote(&local);
+        let Some(reg) = self.promotion_of(&local) else {
+            return;
+        };
+        let mem = Mem {
+            base: FP,
+            offset: local.offset,
+        };
+        if local.ty == Type::Number {
+            self.asm.load_double(D(reg), mem);
+        } else {
+            self.asm.load(X(reg), mem);
+        }
+    }
+
+    // --- the register cache ---------------------------------------------
+
+    /// The register a local is cached in, if any: `(reg, is_fp)`.
+    pub fn cached(&self, local: &Local) -> Option<(u8, bool)> {
+        self.cache.get(local.offset).map(|e| {
+            let is_fp = e.reg < regs::GP_BASE;
+            (e.reg, is_fp)
+        })
+    }
+
+    /// Promote a local into a callee-saved register if one is free and the
+    /// type has one — numbers use the floating pool, ints and booleans the
+    /// general one; strings and arrays stay in their slots.
+    pub fn promote(&mut self, local: &Local) {
+        let fp = match local.ty {
+            Type::Number => true,
+            Type::Int | Type::Boolean => false,
+            _ => return,
+        };
+        self.cache.promote(local.offset, fp);
+    }
+
+    /// The register a local was promoted to, if it was.
+    pub fn promotion_of(&mut self, local: &Local) -> Option<u8> {
+        self.cached(local).map(|(reg, _)| reg)
+    }
+
+    /// Record that a local's cached value is newer than its slot.
+    pub fn mark_dirty(&mut self, local: &Local) {
+        self.cache.mark_dirty(local.offset);
+    }
+
+    /// Open a loop region: locals promoted while it is open are flushed
+    /// and dropped when it closes.
+    pub fn open_region(&mut self) -> u32 {
+        self.cache.open_region()
+    }
+
+    /// Close a loop region, flushing its dirty entries to their slots.
+    pub fn close_region(&mut self, region: u32) {
+        let dropped = self.cache.close_region(region);
+        for e in dropped {
+            if !e.dirty {
+                continue;
+            }
+            let mem = Mem {
+                base: FP,
+                offset: e.slot,
+            };
+            if e.reg < regs::GP_BASE {
+                self.asm.store_double(D(e.reg), mem);
+            } else {
+                self.asm.store(X(e.reg), mem);
+            }
+        }
     }
 }
 
@@ -325,4 +435,72 @@ fn count_locals(stmts: &[Stmt]) -> usize {
         }
     }
     n
+}
+
+/// Save the callee-saved registers the cache uses. They go below the
+/// locals and temporaries and above the saved `x29`/`x30` pair, which the
+/// frame's pre-decrement store places at its very bottom. Pairs go
+/// through `stp`; a dangling single through `str`.
+fn save_callee_saved(asm: &mut Asm, cache: &Cache, used_bytes: i32) {
+    let (fp, gp) = cache.used();
+    place_list(asm, &fp, true, true, used_bytes, 0);
+    place_list(asm, &gp, false, true, used_bytes, fp.len());
+}
+
+/// Restore what `save_callee_saved` saved.
+fn restore_callee_saved(asm: &mut Asm, cache: &Cache, used_bytes: i32) {
+    let (fp, gp) = cache.used();
+    place_list(asm, &fp, true, false, used_bytes, 0);
+    place_list(asm, &gp, false, false, used_bytes, fp.len());
+}
+
+/// Place one pool's registers into the save area, `stp` for pairs and
+/// `str` for a dangling single.
+fn place_list(
+    asm: &mut Asm,
+    regs: &[u8],
+    fp: bool,
+    save: bool,
+    used_bytes: i32,
+    start: usize,
+) {
+    let mut i = 0;
+    while i + 1 < regs.len() {
+        let mem = save_mem(used_bytes, start + i);
+        let (a, b) = (regs[i], regs[i + 1]);
+        if fp {
+            if save {
+                asm.store_pair_d(D(a), D(b), mem);
+            } else {
+                asm.load_pair_d(D(a), D(b), mem);
+            }
+        } else if save {
+            asm.store_pair_x(X(a), X(b), mem);
+        } else {
+            asm.load_pair_x(X(a), X(b), mem);
+        }
+        i += 2;
+    }
+    if i < regs.len() {
+        let mem = save_mem(used_bytes, start + i);
+        if fp {
+            if save {
+                asm.store_double(D(regs[i]), mem);
+            } else {
+                asm.load_double(D(regs[i]), mem);
+            }
+        } else if save {
+            asm.store(X(regs[i]), mem);
+        } else {
+            asm.load(X(regs[i]), mem);
+        }
+    }
+}
+
+/// The memory of entry `i` in the save area.
+fn save_mem(used_bytes: i32, i: usize) -> Mem {
+    Mem {
+        base: FP,
+        offset: -(used_bytes + 8 * (i as i32 + 1)),
+    }
 }
